@@ -1,0 +1,8 @@
+`ifndef COMMON_DEFINES_SVH
+`define COMMON_DEFINES_SVH
+
+`define DATA_WIDTH 64
+
+`define REG_ADDR_WIDTH 5
+
+`endif
