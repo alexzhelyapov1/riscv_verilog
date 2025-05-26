@@ -2,6 +2,7 @@
 `include "common/defines.svh"
 `include "common/immediate_types.svh"
 `include "common/alu_defines.svh" // For ALU_CONTROL_WIDTH
+`include "common/control_signals_defines.svh"
 
 module decode (
     // Inputs from IF/ID Register
@@ -27,6 +28,9 @@ module decode (
     output logic       branch_d_o,
     output logic       alu_src_d_o,
     output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // Unified ALU control
+    output logic [2:0] funct3_d_o,
+    output alu_a_src_sel_e op_a_sel_d_o,
+    output pc_target_src_sel_e pc_target_src_sel_d_o,
 
     // Data
     output logic [`DATA_WIDTH-1:0]  pc_d_o,
@@ -73,7 +77,10 @@ module decode (
         .branch_d_o        (branch_d_o),
         .alu_src_d_o       (alu_src_d_o),
         .alu_control_d_o   (alu_control_d_o), // Now unified
-        .imm_type_d_o      (imm_type_sel_internal)
+        .imm_type_d_o      (imm_type_sel_internal),
+        .funct3_d_o        (funct3_d_o), // Connect to new output from CU
+        .op_a_sel_d_o      (op_a_sel_d_o),
+        .pc_target_src_sel_d_o (pc_target_src_sel_d_o)
     );
 
     // Register File instance

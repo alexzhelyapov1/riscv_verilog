@@ -1,6 +1,7 @@
+// tests/unit/decode_tb.sv
 `include "common/defines.svh"
-`include "common/immediate_types.svh" // For immediate_type_e if needed here (not directly)
-`include "common/alu_defines.svh"   // For ALU_CONTROL_WIDTH
+`include "common/alu_defines.svh"          // For ALU_CONTROL_WIDTH
+`include "common/control_signals_defines.svh" // For alu_a_src_sel_e, pc_target_src_sel_e
 
 module decode_tb (
     input  logic clk,
@@ -26,8 +27,11 @@ module decode_tb (
     output logic       o_mem_write_d,
     output logic       o_jump_d,
     output logic       o_branch_d,
-    output logic       o_alu_src_d,
+    output logic       o_alu_src_d, // Selects ALU Operand B
     output logic [`ALU_CONTROL_WIDTH-1:0] o_alu_control_d,
+    output logic [2:0] o_funct3_d,
+    output alu_a_src_sel_e o_op_a_sel_d,
+    output pc_target_src_sel_e o_pc_target_src_sel_d,
 
     // Data
     output logic [`DATA_WIDTH-1:0]  o_pc_d,
@@ -53,13 +57,11 @@ module decode_tb (
     logic [`DATA_WIDTH-1:0]     pc_plus_4_id_val;
 
     // IF/ID Register instance
-    // Note: stall_d and flush_d control the *output* of IF/ID (input to Decode)
-    // stall_d for IF/ID means Decode stage is stalled, so IF/ID holds.
     if_id_register u_if_id_reg (
         .clk            (clk),
         .rst_n          (rst_n),
-        .stall_d        (i_if_id_stall_d), // Stall signal for IF/ID (from Hazard Unit usually)
-        .flush_d        (i_if_id_flush_d), // Flush signal for IF/ID
+        .stall_d        (i_if_id_stall_d),
+        .flush_d        (i_if_id_flush_d),
         .instr_f_i      (i_instr_f),
         .pc_f_i         (i_pc_f),
         .pc_plus_4_f_i  (i_pc_plus_4_f),
@@ -75,9 +77,10 @@ module decode_tb (
         .instr_id_i         (instr_id_val),
         .pc_id_i            (pc_id_val),
         .pc_plus_4_id_i     (pc_plus_4_id_val),
-        .rd_write_en_wb_i   (i_wb_write_en),     // From testbench for WB sim
-        .rd_addr_wb_i       (i_wb_rd_addr),      // From testbench for WB sim
-        .rd_data_wb_i       (i_wb_rd_data),      // From testbench for WB sim
+        .rd_write_en_wb_i   (i_wb_write_en),
+        .rd_addr_wb_i       (i_wb_rd_addr),
+        .rd_data_wb_i       (i_wb_rd_data),
+
         .reg_write_d_o      (o_reg_write_d),
         .result_src_d_o     (o_result_src_d),
         .mem_write_d_o      (o_mem_write_d),
@@ -85,6 +88,10 @@ module decode_tb (
         .branch_d_o         (o_branch_d),
         .alu_src_d_o        (o_alu_src_d),
         .alu_control_d_o    (o_alu_control_d),
+        .funct3_d_o         (o_funct3_d),
+        .op_a_sel_d_o       (o_op_a_sel_d),
+        .pc_target_src_sel_d_o (o_pc_target_src_sel_d),
+
         .pc_d_o             (o_pc_d),
         .pc_plus_4_d_o      (o_pc_plus_4_d),
         .rs1_data_d_o       (o_rs1_data_d),
