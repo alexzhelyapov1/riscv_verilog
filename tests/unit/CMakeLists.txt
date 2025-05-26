@@ -62,3 +62,12 @@ add_verilator_test(
     ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
     ${CMAKE_SOURCE_DIR}/tests/unit/decode_tb.sv
 )
+
+add_verilator_test(
+    execute_tb # Top Verilog testbench module and .cpp file name
+    # Source files needed
+    ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv         # execute instantiates alu
+    # common defines are included via -I${RTL_INCLUDE_PATH}
+    ${CMAKE_SOURCE_DIR}/tests/unit/execute_tb.sv # The Verilog testbench wrapper
+)

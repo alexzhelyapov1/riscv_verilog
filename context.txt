@@ -1,725 +1,23 @@
---- File: CMakeLists.txt ---
-cmake_minimum_required(VERSION 3.16)
-project(Verilog LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-
-find_program(PROJECT_VERILATOR_EXECUTABLE
-    NAMES verilator verilator_bin
-    DOC "Verilator executable"
-    REQUIRED
-)
-message(STATUS "Found system Verilator executable: ${PROJECT_VERILATOR_EXECUTABLE}")
-
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-add_subdirectory(tests)
-
-
---- File: rtl/core/control_unit.sv ---
-// rtl/core/control_unit.sv
-`include "common/defines.svh"
-`include "common/alu_defines.svh"      // For new `ALU_OP_*` and `ALU_CONTROL_WIDTH`
-`include "common/immediate_types.svh" // For `immediate_type_e`
-`include "common/riscv_opcodes.svh"   // For instruction opcodes and funct codes
-
-module control_unit (
-    // Inputs from instruction
-    input  logic [6:0] op,       // Opcode field
-    input  logic [2:0] funct3,   // Funct3 field
-    input  logic       funct7_5, // Bit 5 of Funct7 field (instr[30])
-
-    // Outputs: Control signals for the datapath
-    output logic       reg_write_d_o,    // To ID/EX: Enable register write in WB
-    output logic [1:0] result_src_d_o,   // To ID/EX: Selects result source for WB
-                                         // 00: ALU Result, 01: Memory Read Data, 10: PC+4
-    output logic       mem_write_d_o,    // To ID/EX: Enable data memory write
-    output logic       jump_d_o,         // To ID/EX: Indicates a JAL or JALR type instruction
-    output logic       branch_d_o,       // To ID/EX: Indicates a branch instruction
-    output logic       alu_src_d_o,      // To ID/EX: Selects ALU operand B (Reg vs Imm)
-    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // To ID/EX: Unified ALU operation control
-    output immediate_type_e imm_type_d_o      // To Immediate Generator: Selects immediate type
-);
-
-    // Default values for control signals
-    assign reg_write_d_o   = 1'b0;
-    assign result_src_d_o  = 2'b00;
-    assign mem_write_d_o   = 1'b0;
-    assign jump_d_o        = 1'b0;
-    assign branch_d_o      = 1'b0;
-    assign alu_src_d_o     = 1'b0;
-    assign alu_control_d_o = `ALU_OP_ADD; // Default to ADD (NOP-like if other signals are off)
-    assign imm_type_d_o    = IMM_TYPE_NONE;
-
-    always_comb begin
-        // Initialize signals to a known "safe" or default state for each instruction type
-        reg_write_d_o   = 1'b0;
-        result_src_d_o  = 2'b00; // Default: Result from ALU
-        mem_write_d_o   = 1'b0;
-        jump_d_o        = 1'b0;
-        branch_d_o      = 1'b0;
-        alu_src_d_o     = 1'b0; // Default: ALU Operand B from Register File (rs2)
-        alu_control_d_o = `ALU_OP_ADD; // Default ALU operation
-        imm_type_d_o    = IMM_TYPE_NONE; // Default: No immediate used or relevant for ImmGen path to ALU
-
-        case (op)
-            `OPCODE_LUI: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate
-                imm_type_d_o    = IMM_TYPE_U;
-                alu_control_d_o = `ALU_OP_ADD; // ALU does 0 + ImmExtU. Source A needs to be zero.
-                                               // This relies on datapath providing 0 for SrcA for LUI.
-                                               // Alternative: `ALU_OP_PASS_B` if ALU supported it and SrcA was not needed.
-                result_src_d_o  = 2'b00; // Result from ALU
-            end
-            `OPCODE_AUIPC: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate
-                imm_type_d_o    = IMM_TYPE_U;
-                alu_control_d_o = `ALU_OP_ADD; // ALU does PC + ImmExtU
-                result_src_d_o  = 2'b00; // Result from ALU
-            end
-            `OPCODE_JAL: begin
-                reg_write_d_o   = 1'b1;
-                jump_d_o        = 1'b1;
-                imm_type_d_o    = IMM_TYPE_J;    // For calculating branch target (PC + ImmExtJ)
-                alu_src_d_o     = 1'b1;          // Target address calculation needs immediate
-                alu_control_d_o = `ALU_OP_ADD;   // PC + ImmExtJ for target. Not for rd data.
-                result_src_d_o  = 2'b10;       // Result to be written (rd) is PC+4
-            end
-            `OPCODE_JALR: begin // funct3 must be 000
-                reg_write_d_o   = 1'b1;
-                jump_d_o        = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate (offset)
-                imm_type_d_o    = IMM_TYPE_I;
-                alu_control_d_o = `ALU_OP_ADD;   // Target address is rs1 + ImmExtI
-                result_src_d_o  = 2'b10;       // Result to be written (rd) is PC+4
-            end
-            `OPCODE_BRANCH: begin // BEQ, BNE, BLT, BGE, BLTU, BGEU
-                branch_d_o      = 1'b1;
-                alu_src_d_o     = 1'b0; // ALU compares rs1 and rs2
-                imm_type_d_o    = IMM_TYPE_B; // For branch offset calculation (PC + ImmExtB)
-                reg_write_d_o   = 1'b0; // Branches do not write to RF
-
-                case (funct3)
-                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB; // Zero flag checked for equality
-                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB; // Zero flag checked for inequality
-                    `FUNCT3_BLT:  alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;  // Condition for BGE is !(rs1 < rs2)
-                    `FUNCT3_BLTU: alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU; // Condition for BGEU is !(rs1 < rs2)unsigned
-                    default:      alu_control_d_o = `ALU_OP_ADD; // Should not happen for valid branch
-                endcase
-            end
-            `OPCODE_LOAD: begin // LB, LH, LW, LD, LBU, LHU, LWU
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1;    // ALU operand B is immediate (offset)
-                imm_type_d_o    = IMM_TYPE_I;
-                alu_control_d_o = `ALU_OP_ADD; // Effective address = rs1 + ImmExtI
-                result_src_d_o  = 2'b01;   // Result from Memory
-                mem_write_d_o   = 1'b0;    // Load is a read
-            end
-            `OPCODE_STORE: begin // SB, SH, SW, SD
-                alu_src_d_o     = 1'b1;    // ALU operand B is immediate (offset)
-                imm_type_d_o    = IMM_TYPE_S;
-                alu_control_d_o = `ALU_OP_ADD; // Effective address = rs1 + ImmExtS
-                mem_write_d_o   = 1'b1;    // Store is a write
-                reg_write_d_o   = 1'b0;    // Stores do not write to RF
-            end
-            `OPCODE_OP_IMM: begin // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate
-                imm_type_d_o    = IMM_TYPE_I; // Includes shamt for shifts
-                result_src_d_o  = 2'b00; // Result from ALU
-
-                case (funct3)
-                    `FUNCT3_ADDI:  alu_control_d_o = `ALU_OP_ADD;
-                    `FUNCT3_SLTI:  alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_SLTIU: alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_XORI:  alu_control_d_o = `ALU_OP_XOR;
-                    `FUNCT3_ORI:   alu_control_d_o = `ALU_OP_OR;
-                    `FUNCT3_ANDI:  alu_control_d_o = `ALU_OP_AND;
-                    `FUNCT3_SLLI:  alu_control_d_o = `ALU_OP_SLL; // funct7_5 is 0
-                    `FUNCT3_SRLI_SRAI: begin // SRLI or SRAI
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) begin // SRAI (funct7[5]==1 for I-type SRAI)
-                            alu_control_d_o = `ALU_OP_SRA;
-                        end else begin // SRLI (funct7[5]==0 for I-type SRLI)
-                            alu_control_d_o = `ALU_OP_SRL;
-                        end
-                    end
-                    default: alu_control_d_o = `ALU_OP_ADD; // Should not happen
-                endcase
-            end
-            `OPCODE_OP: begin // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b0; // ALU operand B from register
-                imm_type_d_o    = IMM_TYPE_NONE; // No immediate for ALU path
-                result_src_d_o  = 2'b00;   // Result from ALU
-
-                case (funct3)
-                    `FUNCT3_ADD_SUB: begin
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SUB;
-                        else                               alu_control_d_o = `ALU_OP_ADD;
-                    end
-                    `FUNCT3_SLL:   alu_control_d_o = `ALU_OP_SLL;
-                    `FUNCT3_SLT:   alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_SLTU:  alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_XOR:   alu_control_d_o = `ALU_OP_XOR;
-                    `FUNCT3_SRL_SRA: begin
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
-                        else                               alu_control_d_o = `ALU_OP_SRL;
-                    end
-                    `FUNCT3_OR:    alu_control_d_o = `ALU_OP_OR;
-                    `FUNCT3_AND:   alu_control_d_o = `ALU_OP_AND;
-                    default:       alu_control_d_o = `ALU_OP_ADD; // Should not happen
-                endcase
-            end
-            default: begin // Unknown opcode, treat as NOP
-                reg_write_d_o   = 1'b0;
-                result_src_d_o  = 2'b00;
-                mem_write_d_o   = 1'b0;
-                jump_d_o        = 1'b0;
-                branch_d_o      = 1'b0;
-                alu_src_d_o     = 1'b0;
-                alu_control_d_o = `ALU_OP_ADD; // Effectively NOP if rd is x0 or RegWriteD is 0
-                imm_type_d_o    = IMM_TYPE_NONE;
-            end
-        endcase
-    end
-endmodule
-
-
---- File: rtl/core/memory.sv ---
-
-
-
---- File: rtl/core/register_file.sv ---
-`include "common/defines.svh"
-
-module register_file (
-    input  logic clk,
-    input  logic rst_n,
-
-    // Read Port 1
-    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_i,
-    output logic [`DATA_WIDTH-1:0]     rs1_data_o,
-
-    // Read Port 2
-    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_i,
-    output logic [`DATA_WIDTH-1:0]     rs2_data_o,
-
-    // Write Port (from Writeback stage)
-    input  logic                       rd_write_en_wb_i, // RegWriteW
-    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,    // RdW
-    input  logic [`DATA_WIDTH-1:0]     rd_data_wb_i     // ResultW
-);
-
-    // 32 registers, each DATA_WIDTH bits wide
-    // reg[0] is hardwired to zero
-    logic [`DATA_WIDTH-1:0] regs[31:0];
-
-    // Asynchronous read for rs1_data_o and rs2_data_o
-    // Reading register 0 always yields 0
-    assign rs1_data_o = (rs1_addr_i == `REG_ADDR_WIDTH'(0)) ? `DATA_WIDTH'(0) : regs[rs1_addr_i];
-    assign rs2_data_o = (rs2_addr_i == `REG_ADDR_WIDTH'(0)) ? `DATA_WIDTH'(0) : regs[rs2_addr_i];
-
-    // Synchronous write on positive clock edge
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            // Initialize all registers to 0 on reset (optional, good for simulation)
-            for (int i = 0; i < 32; i++) begin
-                regs[i] <= `DATA_WIDTH'(0);
-            end
-        end else begin
-            if (rd_write_en_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0))) begin
-                regs[rd_addr_wb_i] <= rd_data_wb_i;
-            end
-        end
-    end
-
-    // For simulation, to observe register values (not synthesizable this way usually for direct tb access)
-    // Or use DPI for more robust testbench access
-`ifdef VERILATOR
-    // Provide a way to dump registers for Verilator testing if needed
-    // This is a simplification; direct access for writing/reading from testbench
-    // might be complex or require specific Verilator features like public_flat.
-`endif
-
-endmodule
-
-
---- File: rtl/core/execute.sv ---
-
-
-
---- File: rtl/core/immediate_generator.sv ---
-// rtl/core/immediate_generator.sv
-`include "common/defines.svh"
-`include "common/immediate_types.svh"
-
-module immediate_generator (
-    input  logic [`INSTR_WIDTH-1:0] instr_i,
-    input  immediate_type_e         imm_type_sel_i, // Selects the type of immediate to generate
-    output logic [`DATA_WIDTH-1:0]  imm_ext_o      // Sign-extended immediate value
-);
-
-    logic [`DATA_WIDTH-1:0] imm_i_type;
-    logic [`DATA_WIDTH-1:0] imm_s_type;
-    logic [`DATA_WIDTH-1:0] imm_b_type;
-    logic [`DATA_WIDTH-1:0] imm_u_type;
-    logic [`DATA_WIDTH-1:0] imm_j_type;
-
-    // I-type immediate: instr[31:20] (12 bits)
-    assign imm_i_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:20]};
-
-    // S-type immediate: instr[31:25], instr[11:7] (12 bits)
-    assign imm_s_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:25], instr_i[11:7]};
-
-    // B-type immediate: {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0} (13 bits)
-    // Sign-extended from original bit 12 (instr[31]) of the conceptual 13-bit immediate.
-    assign imm_b_type = {{(`DATA_WIDTH-13){instr_i[31]}}, instr_i[31], instr_i[7], instr_i[30:25], instr_i[11:8], 1'b0};
-
-    // U-type immediate: {instr[31:12], 12'b0} (32 bits)
-    // Sign-extended from bit 31 of the effective 32-bit immediate. For RV64, this means sign-extend from bit 31 of the value.
-    assign imm_u_type = {{(`DATA_WIDTH-32){instr_i[31]}}, instr_i[31:12], 12'h000};
-
-    // J-type immediate: {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0} (21 bits)
-    // Sign-extended from original bit 20 (instr[31]) of the conceptual 21-bit immediate.
-    assign imm_j_type = {{(`DATA_WIDTH-21){instr_i[31]}}, instr_i[31], instr_i[19:12], instr_i[20], instr_i[30:21], 1'b0};
-
-    always_comb begin
-        case (imm_type_sel_i)
-            IMM_TYPE_I:    imm_ext_o = imm_i_type;
-            IMM_TYPE_S:    imm_ext_o = imm_s_type;
-            IMM_TYPE_B:    imm_ext_o = imm_b_type;
-            IMM_TYPE_U:    imm_ext_o = imm_u_type;
-            IMM_TYPE_J:    imm_ext_o = imm_j_type;
-            IMM_TYPE_NONE: imm_ext_o = `DATA_WIDTH'(0); // Or 'x if preferred for non-existent immediates
-            default:       imm_ext_o = `DATA_WIDTH'('x); // Should not happen with valid enum
-        endcase
-    end
-
-endmodule
-
-
---- File: rtl/core/id_ex_register.sv ---
-// rtl/core/id_ex_register.sv
-`include "common/defines.svh"
-`include "common/alu_defines.svh" // For ALU_CONTROL_WIDTH and default ALU_OP_ADD
-
-module id_ex_register (
-    input  logic clk,
-    input  logic rst_n,
-
-    // Control signals from Hazard Unit
-    input  logic stall_e, // Stall: keeps current values
-    input  logic flush_e, // Flush: clears register (outputs NOP-like control)
-
-    // Inputs from Decode Stage
-    // Control Signals
-    input  logic       reg_write_d_i,
-    input  logic [1:0] result_src_d_i,
-    input  logic       mem_write_d_i,
-    input  logic       jump_d_i,
-    input  logic       branch_d_i,
-    input  logic       alu_src_d_i,
-    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_i, // Unified ALU control
-
-    // Data
-    input  logic [`DATA_WIDTH-1:0]  pc_d_i,
-    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_d_i,
-    input  logic [`DATA_WIDTH-1:0]  rs1_data_d_i,
-    input  logic [`DATA_WIDTH-1:0]  rs2_data_d_i,
-    input  logic [`DATA_WIDTH-1:0]  imm_ext_d_i,
-
-    // Register addresses
-    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_i,
-    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_i,
-    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_d_i,
-
-
-    // Outputs to Execute Stage
-    // Control Signals
-    output logic       reg_write_e_o,
-    output logic [1:0] result_src_e_o,
-    output logic       mem_write_e_o,
-    output logic       jump_e_o,
-    output logic       branch_e_o,
-    output logic       alu_src_e_o,
-    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_e_o, // Unified ALU control
-
-    // Data
-    output logic [`DATA_WIDTH-1:0]  pc_e_o,
-    output logic [`DATA_WIDTH-1:0]  pc_plus_4_e_o,
-    output logic [`DATA_WIDTH-1:0]  rs1_data_e_o,
-    output logic [`DATA_WIDTH-1:0]  rs2_data_e_o,
-    output logic [`DATA_WIDTH-1:0]  imm_ext_e_o,
-
-    // Register addresses
-    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_e_o,
-    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_e_o,
-    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_e_o
-);
-
-    // Default NOP-like control values for flush/reset
-    localparam CTL_NOP_REG_WRITE  = 1'b0;
-    localparam CTL_NOP_MEM_WRITE  = 1'b0;
-    localparam CTL_NOP_JUMP       = 1'b0;
-    localparam CTL_NOP_BRANCH     = 1'b0;
-    localparam CTL_NOP_ALU_SRC    = 1'b0;
-    localparam CTL_NOP_ALU_CTRL   = `ALU_OP_ADD; // NOP ALU op
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            reg_write_e_o    <= CTL_NOP_REG_WRITE;
-            result_src_e_o   <= 2'b00;
-            mem_write_e_o    <= CTL_NOP_MEM_WRITE;
-            jump_e_o         <= CTL_NOP_JUMP;
-            branch_e_o       <= CTL_NOP_BRANCH;
-            alu_src_e_o      <= CTL_NOP_ALU_SRC;
-            alu_control_e_o  <= CTL_NOP_ALU_CTRL;
-
-            pc_e_o           <= {`DATA_WIDTH{1'b0}};
-            pc_plus_4_e_o    <= {`DATA_WIDTH{1'b0}};
-            rs1_data_e_o     <= {`DATA_WIDTH{1'b0}};
-            rs2_data_e_o     <= {`DATA_WIDTH{1'b0}};
-            imm_ext_e_o      <= {`DATA_WIDTH{1'b0}};
-            rs1_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
-            rs2_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
-            rd_addr_e_o      <= {`REG_ADDR_WIDTH{1'b0}};
-
-        end else if (flush_e) begin
-            reg_write_e_o    <= CTL_NOP_REG_WRITE;
-            result_src_e_o   <= 2'b00;
-            mem_write_e_o    <= CTL_NOP_MEM_WRITE;
-            jump_e_o         <= CTL_NOP_JUMP;
-            branch_e_o       <= CTL_NOP_BRANCH;
-            alu_src_e_o      <= CTL_NOP_ALU_SRC;
-            alu_control_e_o  <= CTL_NOP_ALU_CTRL;
-            // Data fields can be zeroed
-            pc_e_o           <= {`DATA_WIDTH{1'b0}};
-            pc_plus_4_e_o    <= {`DATA_WIDTH{1'b0}};
-            rs1_data_e_o     <= {`DATA_WIDTH{1'b0}};
-            rs2_data_e_o     <= {`DATA_WIDTH{1'b0}};
-            imm_ext_e_o      <= {`DATA_WIDTH{1'b0}};
-            rs1_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
-            rs2_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
-            rd_addr_e_o      <= {`REG_ADDR_WIDTH{1'b0}}; // Rd for NOP should be x0 if RegWrite is active
-
-        end else if (!stall_e) begin
-            reg_write_e_o    <= reg_write_d_i;
-            result_src_e_o   <= result_src_d_i;
-            mem_write_e_o    <= mem_write_d_i;
-            jump_e_o         <= jump_d_i;
-            branch_e_o       <= branch_d_i;
-            alu_src_e_o      <= alu_src_d_i;
-            alu_control_e_o  <= alu_control_d_i;
-
-            pc_e_o           <= pc_d_i;
-            pc_plus_4_e_o    <= pc_plus_4_d_i;
-            rs1_data_e_o     <= rs1_data_d_i;
-            rs2_data_e_o     <= rs2_data_d_i;
-            imm_ext_e_o      <= imm_ext_d_i;
-            rs1_addr_e_o     <= rs1_addr_d_i;
-            rs2_addr_e_o     <= rs2_addr_d_i;
-            rd_addr_e_o      <= rd_addr_d_i;
-        end
-        // If stalled (stall_e = 1) and not flushed, register holds its value
-    end
-endmodule
-
-
---- File: rtl/core/fetch.sv ---
-`include "common/defines.svh"
-
-module fetch (
-    input  logic clk,
-    input  logic rst_n,
-
-    // Control signals from Hazard Unit / Execute Stage
-    input  logic                       stall_f,     // Stall PC and instruction fetch
-    input  logic                       pc_src_e,    // Selects PC source (PC+4 or branch/jump target)
-    input  logic [`DATA_WIDTH-1:0]     pc_target_e, // Branch/jump target address from EX stage
-
-    // Outputs to IF/ID pipeline register
-    output logic [`INSTR_WIDTH-1:0]    instr_f_o,
-    output logic [`DATA_WIDTH-1:0]     pc_plus_4_f_o,
-    output logic [`DATA_WIDTH-1:0]     pc_f_o          // Current PC fetched
-);
-
-    logic [`DATA_WIDTH-1:0] pc_reg;
-    logic [`DATA_WIDTH-1:0] pc_next;
-    logic [`DATA_WIDTH-1:0] pc_plus_4_temp;
-
-    // Instruction Memory instance
-    instruction_memory i_instr_mem (
-        .address     (pc_reg),
-        .instruction (instr_f_o)
-    );
-
-    // Adder for PC + 4
-    assign pc_plus_4_temp = pc_reg + 4;
-
-    // MUX for next PC selection
-    assign pc_next = pc_src_e ? pc_target_e : pc_plus_4_temp;
-
-    // PC Register
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            pc_reg <= {`DATA_WIDTH{1'b0}}; // Reset PC to 0
-        end else if (!stall_f) begin // If not stalled, update PC
-            pc_reg <= pc_next;
-        end
-        // If stalled (stall_f = 1), PC holds its value
-    end
-
-    assign pc_plus_4_f_o = pc_plus_4_temp;
-    assign pc_f_o        = pc_reg; // Output current PC
-
-endmodule
-
-
---- File: rtl/core/alu.sv ---
-// rtl/core/alu.sv
-`include "common/defines.svh"
-`include "common/alu_defines.svh" // Will use new defines
-
-module alu (
-    input  logic [`DATA_WIDTH-1:0]     operand_a,
-    input  logic [`DATA_WIDTH-1:0]     operand_b,
-    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control, // Unified control signal
-    output logic [`DATA_WIDTH-1:0]     result,
-    output logic                       zero_flag
-);
-
-    logic [`DATA_WIDTH-1:0] result_comb;
-    logic [5:0]             shift_amount; // For RV64, shift by lower 6 bits of operand_b
-
-    assign shift_amount = operand_b[5:0];
-
-    always_comb begin
-        result_comb = {`DATA_WIDTH{1'bx}}; // Default to 'x'
-
-        case (alu_control)
-            `ALU_OP_ADD:  result_comb = operand_a + operand_b;
-            `ALU_OP_SUB:  result_comb = operand_a - operand_b;
-            `ALU_OP_SLL:  result_comb = operand_a << shift_amount;
-            `ALU_OP_SLT:  result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
-            `ALU_OP_SLTU: result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
-            `ALU_OP_XOR:  result_comb = operand_a ^ operand_b;
-            `ALU_OP_SRL:  result_comb = operand_a >> shift_amount;
-            `ALU_OP_SRA:  result_comb = $signed(operand_a) >>> shift_amount;
-            `ALU_OP_OR:   result_comb = operand_a | operand_b;
-            `ALU_OP_AND:  result_comb = operand_a & operand_b;
-            // `ALU_OP_PASS_B: result_comb = operand_b; // If we had this explicit op
-            default:      result_comb = {`DATA_WIDTH{1'bx}}; // Undefined operation
-        endcase
-    end
-
-    assign result = result_comb;
-    assign zero_flag = (result_comb == {`DATA_WIDTH{1'b0}});
-
-endmodule
-
-
---- File: rtl/core/decode.sv ---
-// rtl/core/decode.sv
-`include "common/defines.svh"
-`include "common/immediate_types.svh"
-`include "common/alu_defines.svh" // For ALU_CONTROL_WIDTH
-
-module decode (
-    // Inputs from IF/ID Register
-    input  logic [`INSTR_WIDTH-1:0] instr_id_i,
-    input  logic [`DATA_WIDTH-1:0]  pc_id_i,
-    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_id_i,
-
-    // Inputs from Writeback Stage (for register file write)
-    input  logic                       rd_write_en_wb_i,
-    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,
-    input  logic [`DATA_WIDTH-1:0]     rd_data_wb_i,
-
-    // Clock and Reset
-    input  logic clk,
-    input  logic rst_n,
-
-    // Outputs to ID/EX Register
-    // Control Signals
-    output logic       reg_write_d_o,
-    output logic [1:0] result_src_d_o,
-    output logic       mem_write_d_o,
-    output logic       jump_d_o,
-    output logic       branch_d_o,
-    output logic       alu_src_d_o,
-    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // Unified ALU control
-
-    // Data
-    output logic [`DATA_WIDTH-1:0]  pc_d_o,
-    output logic [`DATA_WIDTH-1:0]  pc_plus_4_d_o,
-    output logic [`DATA_WIDTH-1:0]  rs1_data_d_o,
-    output logic [`DATA_WIDTH-1:0]  rs2_data_d_o,
-    output logic [`DATA_WIDTH-1:0]  imm_ext_d_o,
-
-    // Register addresses (for hazard unit)
-    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_o,
-    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_o,
-    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_d_o
-);
-
-    // Instruction fields
-    logic [6:0] opcode;
-    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_instr;
-    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_instr;
-    logic [`REG_ADDR_WIDTH-1:0] rd_addr_instr;
-    logic [2:0] funct3;
-    logic       funct7_5;
-
-    // Intermediate signals
-    immediate_type_e imm_type_sel_internal;
-
-    // Decompose instruction
-    assign opcode         = instr_id_i[6:0];
-    assign rd_addr_instr  = instr_id_i[11:7];
-    assign funct3         = instr_id_i[14:12];
-    assign rs1_addr_instr = instr_id_i[19:15];
-    assign rs2_addr_instr = instr_id_i[24:20];
-    assign funct7_5       = instr_id_i[30]; // Bit 5 of funct7
-
-    // Control Unit instance
-    control_unit u_control_unit (
-        .op                (opcode),
-        .funct3            (funct3),
-        .funct7_5          (funct7_5),
-
-        .reg_write_d_o     (reg_write_d_o),
-        .result_src_d_o    (result_src_d_o),
-        .mem_write_d_o     (mem_write_d_o),
-        .jump_d_o          (jump_d_o),
-        .branch_d_o        (branch_d_o),
-        .alu_src_d_o       (alu_src_d_o),
-        .alu_control_d_o   (alu_control_d_o), // Now unified
-        .imm_type_d_o      (imm_type_sel_internal)
-    );
-
-    // Register File instance
-    register_file u_register_file (
-        .clk               (clk),
-        .rst_n             (rst_n),
-        .rs1_addr_i        (rs1_addr_instr),
-        .rs1_data_o        (rs1_data_d_o),
-        .rs2_addr_i        (rs2_addr_instr),
-        .rs2_data_o        (rs2_data_d_o),
-        .rd_write_en_wb_i  (rd_write_en_wb_i),
-        .rd_addr_wb_i      (rd_addr_wb_i),
-        .rd_data_wb_i      (rd_data_wb_i)
-    );
-
-    // Immediate Generator instance
-    immediate_generator u_immediate_generator (
-        .instr_i           (instr_id_i),
-        .imm_type_sel_i    (imm_type_sel_internal),
-        .imm_ext_o         (imm_ext_d_o)
-    );
-
-    // Pass through PC values
-    assign pc_d_o        = pc_id_i;
-    assign pc_plus_4_d_o = pc_plus_4_id_i;
-
-    // Pass through register addresses for hazard detection and forwarding
-    assign rs1_addr_d_o  = rs1_addr_instr;
-    assign rs2_addr_d_o  = rs2_addr_instr;
-    assign rd_addr_d_o   = rd_addr_instr;
-
-endmodule
-
-
---- File: rtl/core/writeback.sv ---
-
-
-
---- File: rtl/core/pipeline_control.sv ---
-
-
-
---- File: rtl/core/instruction_memory.sv ---
-`include "common/defines.svh"
-
-module instruction_memory (
-    input  logic [`DATA_WIDTH-1:0] address,
-    output logic [`INSTR_WIDTH-1:0] instruction
-);
-
-    localparam ROM_SIZE = 256; // Number of instructions
-    logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
-
-    // In a real scenario, this would be loaded from a file (e.g., $readmemh)
-    initial begin
-        for (int i = 0; i < ROM_SIZE; i++) begin
-            mem[i] = 32'h00000013; // NOP
-        end
-        // Add a few distinct instructions for testing later
-        mem[0] = 32'h00100093; // addi x1, x0, 1
-        mem[1] = 32'h00200113; // addi x2, x0, 2
-        // mem[2] = 32'h00008067; // jalr x0, x1, 0 (effectively a jump to x1 content)
-        //                        // This is a simplification; jalr needs rs1.
-        //                        // Let's use simpler instructions for now.
-        mem[2] = 32'h00308193; // addi x3, x1, 3
-        mem[3] = 32'h00110213; // addi x4, x2, 1
-    end
-
-    assign instruction = mem[address[`DATA_WIDTH-1:2]]; // Use PC[63:2] as index for 32-bit instructions
-
-endmodule
-
-
---- File: rtl/core/if_id_register.sv ---
-`include "common/defines.svh"
-
-module if_id_register (
-    input  logic clk,
-    input  logic rst_n,
-
-    // Control signals from Hazard Unit
-    input  logic stall_d, // Stall: keeps current values
-    input  logic flush_d, // Flush: clears register (outputs NOP-like values)
-
-    // Data inputs from Fetch Stage
-    input  logic [`INSTR_WIDTH-1:0] instr_f_i,
-    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_f_i,
-    input  logic [`DATA_WIDTH-1:0]  pc_f_i,          // Current PC from Fetch
-
-    // Data outputs to Decode Stage
-    output logic [`INSTR_WIDTH-1:0] instr_id_o,
-    output logic [`DATA_WIDTH-1:0]  pc_plus_4_id_o,
-    output logic [`DATA_WIDTH-1:0]  pc_id_o           // Current PC to Decode
-);
-
-    // NOP instruction (addi x0, x0, 0) for RISC-V
-    localparam NOP_INSTRUCTION = `INSTR_WIDTH'h00000013;
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            instr_id_o     <= NOP_INSTRUCTION;
-            pc_plus_4_id_o <= {`DATA_WIDTH{1'b0}};
-            pc_id_o        <= {`DATA_WIDTH{1'b0}};
-        end else if (flush_d) begin
-            instr_id_o     <= NOP_INSTRUCTION; // Flush with NOP
-            pc_plus_4_id_o <= {`DATA_WIDTH{1'b0}}; // Or a defined "safe" PC+4
-            pc_id_o        <= {`DATA_WIDTH{1'b0}}; // Or a defined "safe" PC
-        end else if (!stall_d) begin // If not stalled and not flushed, pass inputs
-            instr_id_o     <= instr_f_i;
-            pc_plus_4_id_o <= pc_plus_4_f_i;
-            pc_id_o        <= pc_f_i;
-        end
-        // If stalled (stall_d = 1) and not flushed, register holds its value
-    end
-
-endmodule
+--- File: rtl/common/control_signals_defines.svh ---
+// rtl/common/control_signals_defines.svh
+`ifndef CONTROL_SIGNALS_DEFINES_SVH
+`define CONTROL_SIGNALS_DEFINES_SVH
+
+// Selector for ALU Operand A
+typedef enum logic [1:0] {
+    ALU_A_SRC_RS1,   // Select RS1 data
+    ALU_A_SRC_PC,    // Select PC
+    ALU_A_SRC_ZERO   // Select constant Zero (for LUI: 0 + Imm)
+    // ALU_A_SRC_FWD // Will be handled by forwarding logic, this selects the *original* source
+} alu_a_src_sel_e;
+
+// Selector for PC Target Address source in Execute stage
+typedef enum logic [0:0] { // Only two main sources for now
+    PC_TARGET_SRC_PC_PLUS_IMM, // Target = PC + Immediate (for Branch, JAL)
+    PC_TARGET_SRC_ALU_JALR     // Target = (ALU_Result from RS1+Imm) & ~1 (for JALR)
+} pc_target_src_sel_e;
+
+`endif // CONTROL_SIGNALS_DEFINES_SVH
 
 
 --- File: rtl/common/riscv_opcodes.svh ---
@@ -798,6 +96,17 @@ endmodule
 `endif // RISCV_OPCODES_SVH
 
 
+--- File: rtl/common/defines.svh ---
+`ifndef COMMON_DEFINES_SVH
+`define COMMON_DEFINES_SVH
+
+`define DATA_WIDTH 64
+`define INSTR_WIDTH 32
+`define REG_ADDR_WIDTH 5
+
+`endif
+
+
 --- File: rtl/common/immediate_types.svh ---
 // rtl/common/immediate_types.svh
 `ifndef IMMEDIATE_TYPES_SVH
@@ -811,21 +120,11 @@ typedef enum logic [2:0] {
     IMM_TYPE_S,    // S-type (SW)
     IMM_TYPE_B,    // B-type (Branches)
     IMM_TYPE_U,    // U-type (LUI, AUIPC)
-    IMM_TYPE_J     // J-type (JAL)
+    IMM_TYPE_J,     // J-type (JAL)
+    IMM_TYPE_ISHIFT // Новый тип для SLLI, SRLI, SRAI
 } immediate_type_e;
 
 `endif // IMMEDIATE_TYPES_SVH
-
-
---- File: rtl/common/defines.svh ---
-`ifndef COMMON_DEFINES_SVH
-`define COMMON_DEFINES_SVH
-
-`define DATA_WIDTH 64
-`define INSTR_WIDTH 32
-`define REG_ADDR_WIDTH 5
-
-`endif
 
 
 --- File: rtl/common/alu_defines.svh ---
@@ -856,859 +155,1719 @@ typedef enum logic [2:0] {
 `endif // ALU_DEFINES_SVH
 
 
---- File: rtl/pipeline.sv ---
-
-
-
---- File: tests/CMakeLists.txt ---
-add_custom_target(tests_full)
-add_subdirectory(unit)
-
-
---- File: tests/unit/decode_tb.sv ---
+--- File: rtl/core/control_unit.sv ---
+// rtl/core/control_unit.sv
 `include "common/defines.svh"
-`include "common/immediate_types.svh" // For immediate_type_e if needed here (not directly)
-`include "common/alu_defines.svh"   // For ALU_CONTROL_WIDTH
+`include "common/alu_defines.svh"
+`include "common/immediate_types.svh"
+`include "common/riscv_opcodes.svh"
+`include "common/control_signals_defines.svh" // New include
 
-module decode_tb (
+module control_unit (
+    // Inputs from instruction
+    input  logic [6:0] op,
+    input  logic [2:0] funct3,
+    input  logic       funct7_5,
+
+    // Outputs: Control signals
+    output logic       reg_write_d_o,
+    output logic [1:0] result_src_d_o,
+    output logic       mem_write_d_o,
+    output logic       jump_d_o,
+    output logic       branch_d_o,
+    output logic       alu_src_d_o,      // Selects ALU operand B (Reg vs Imm)
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o,
+    output immediate_type_e imm_type_d_o,
+    output logic [2:0] funct3_d_o,             // Pass funct3 for branch logic in EX & mem access type in MEM
+    output alu_a_src_sel_e op_a_sel_d_o,        // Selects ALU operand A source
+    output pc_target_src_sel_e pc_target_src_sel_d_o // Selects PC target source for EX
+);
+
+    // Pass funct3 directly as it's needed in later stages
+    assign funct3_d_o = funct3;
+
+    always_comb begin
+        // Initialize signals to a known "safe" or default state for each instruction type
+        reg_write_d_o   = 1'b0;
+        result_src_d_o  = 2'b00; // Default: Result from ALU
+        mem_write_d_o   = 1'b0;
+        jump_d_o        = 1'b0;
+        branch_d_o      = 1'b0;
+        alu_src_d_o     = 1'b0; // Default: ALU Operand B from Register File (rs2)
+        alu_control_d_o = `ALU_OP_ADD; // Default ALU operation
+        imm_type_d_o    = IMM_TYPE_NONE;
+        op_a_sel_d_o    = ALU_A_SRC_RS1; // Default
+        pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Default
+
+        case (op)
+            `OPCODE_LUI: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // Imm for OpB
+                imm_type_d_o    = IMM_TYPE_U;
+                op_a_sel_d_o    = ALU_A_SRC_ZERO; // ALU OpA = 0
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = 0 + Imm
+                result_src_d_o  = 2'b00;
+            end
+            `OPCODE_AUIPC: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // Imm for OpB
+                imm_type_d_o    = IMM_TYPE_U;
+                op_a_sel_d_o    = ALU_A_SRC_PC;   // ALU OpA = PC
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = PC + Imm
+                result_src_d_o  = 2'b00;
+            end
+            `OPCODE_JAL: begin
+                reg_write_d_o   = 1'b1;
+                jump_d_o        = 1'b1;
+                imm_type_d_o    = IMM_TYPE_J;
+                result_src_d_o  = 2'b10;      // rd = PC+4
+                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Target = PC + ImmJ
+                // ALU might be idle or used by a separate adder for PC+Imm.
+                // To keep ALU control consistent if it *were* used for target:
+                op_a_sel_d_o    = ALU_A_SRC_PC; // If ALU calculated PC+ImmJ
+                alu_src_d_o     = 1'b1;
+                alu_control_d_o = `ALU_OP_ADD;
+            end
+            `OPCODE_JALR: begin
+                reg_write_d_o   = 1'b1;
+                jump_d_o        = 1'b1;
+                alu_src_d_o     = 1'b1; // Imm for OpB
+                imm_type_d_o    = IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;  // ALU OpA = RS1
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + Imm (for target calculation)
+                result_src_d_o  = 2'b10;      // rd = PC+4
+                pc_target_src_sel_d_o = PC_TARGET_SRC_ALU_JALR; // Target from ALU result & ~1
+            end
+            `OPCODE_BRANCH: begin
+                branch_d_o      = 1'b1;
+                alu_src_d_o     = 1'b0; // OpB = RS2 for comparison
+                op_a_sel_d_o    = ALU_A_SRC_RS1; // OpA = RS1 for comparison
+                imm_type_d_o    = IMM_TYPE_B;    // For PC + ImmB target calculation
+                reg_write_d_o   = 1'b0;
+                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Target is PC+ImmB
+                case (funct3)
+                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB;
+                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB;
+                    `FUNCT3_BLT:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_BLTU: alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU;
+                    default:      alu_control_d_o = `ALU_OP_ADD; // Or some invalid op
+                endcase
+            end
+            `OPCODE_LOAD: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // Imm for OpB (offset)
+                imm_type_d_o    = IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;  // OpA = RS1 (base address)
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + offset (address calculation)
+                result_src_d_o  = 2'b01;      // Result from Memory
+                mem_write_d_o   = 1'b0;
+            end
+            `OPCODE_STORE: begin
+                alu_src_d_o     = 1'b1; // Imm for OpB (offset)
+                imm_type_d_o    = IMM_TYPE_S;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;  // OpA = RS1 (base address)
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + offset (address calculation)
+                mem_write_d_o   = 1'b1;
+                reg_write_d_o   = 1'b0;
+            end
+            `OPCODE_OP_IMM: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // Imm for OpB
+                imm_type_d_o    = (funct3 == `FUNCT3_SLLI || funct3 == `FUNCT3_SRLI_SRAI) ? IMM_TYPE_ISHIFT : IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                result_src_d_o  = 2'b00;
+                case (funct3)
+                    `FUNCT3_ADDI:  alu_control_d_o = `ALU_OP_ADD;
+                    `FUNCT3_SLTI:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_SLTIU: alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_XORI:  alu_control_d_o = `ALU_OP_XOR;
+                    `FUNCT3_ORI:   alu_control_d_o = `ALU_OP_OR;
+                    `FUNCT3_ANDI:  alu_control_d_o = `ALU_OP_AND;
+                    `FUNCT3_SLLI:  alu_control_d_o = `ALU_OP_SLL;
+                    `FUNCT3_SRLI_SRAI: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
+                        else                               alu_control_d_o = `ALU_OP_SRL;
+                    end
+                    default:       alu_control_d_o = `ALU_OP_ADD;
+                endcase
+            end
+            `OPCODE_OP: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b0; // OpB = RS2
+                op_a_sel_d_o    = ALU_A_SRC_RS1; // OpA = RS1
+                imm_type_d_o    = IMM_TYPE_NONE;
+                result_src_d_o  = 2'b00;
+                case (funct3)
+                    `FUNCT3_ADD_SUB: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SUB;
+                        else                               alu_control_d_o = `ALU_OP_ADD;
+                    end
+                    `FUNCT3_SLL:   alu_control_d_o = `ALU_OP_SLL;
+                    `FUNCT3_SLT:   alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_SLTU:  alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_XOR:   alu_control_d_o = `ALU_OP_XOR;
+                    `FUNCT3_SRL_SRA: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
+                        else                               alu_control_d_o = `ALU_OP_SRL;
+                    end
+                    `FUNCT3_OR:    alu_control_d_o = `ALU_OP_OR;
+                    `FUNCT3_AND:   alu_control_d_o = `ALU_OP_AND;
+                    default:       alu_control_d_o = `ALU_OP_ADD;
+                endcase
+            end
+            default: begin // NOP / Unknown
+                // Default assignments from above cover this
+            end
+        endcase
+    end
+endmodule
+
+
+--- File: rtl/core/ex_mem_register ---
+// rtl/core/ex_mem_register.sv
+`include "common/defines.svh"
+// `include "common/alu_defines.svh" // Not strictly needed here
+
+module ex_mem_register (
     input  logic clk,
     input  logic rst_n,
 
-    // Inputs to control the test environment
-    // To IF/ID register
-    input  logic                       i_if_id_stall_d, // Stall for if_id register
-    input  logic                       i_if_id_flush_d, // Flush for if_id register
-    input  logic [`INSTR_WIDTH-1:0]    i_instr_f,       // Instruction from a virtual "fetch"
-    input  logic [`DATA_WIDTH-1:0]     i_pc_f,          // PC from a virtual "fetch"
-    input  logic [`DATA_WIDTH-1:0]     i_pc_plus_4_f,   // PC+4 from a virtual "fetch"
+    // Inputs from Execute Stage
+    input  logic       reg_write_e_i,
+    input  logic [1:0] result_src_e_i,
+    input  logic       mem_write_e_i,
+    input  logic [`DATA_WIDTH-1:0] alu_result_e_i,
+    input  logic [`DATA_WIDTH-1:0] rs2_data_e_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_e_i,
+    input  logic [`DATA_WIDTH-1:0] pc_plus_4_e_i,
+// change start
+    input  logic [2:0] funct3_e_i,         // Input for pipelined funct3
+// change end
 
-    // To Register File (for initialization during test, and Writeback simulation)
-    input  logic                       i_wb_write_en,
-    input  logic [`REG_ADDR_WIDTH-1:0] i_wb_rd_addr,
-    input  logic [`DATA_WIDTH-1:0]     i_wb_rd_data,
-
-    // Outputs from Decode stage (to observe)
-    // Control Signals
-    output logic       o_reg_write_d,
-    output logic [1:0] o_result_src_d,
-    output logic       o_mem_write_d,
-    output logic       o_jump_d,
-    output logic       o_branch_d,
-    output logic       o_alu_src_d,
-    output logic [`ALU_CONTROL_WIDTH-1:0] o_alu_control_d,
-
-    // Data
-    output logic [`DATA_WIDTH-1:0]  o_pc_d,
-    output logic [`DATA_WIDTH-1:0]  o_pc_plus_4_d,
-    output logic [`DATA_WIDTH-1:0]  o_rs1_data_d,
-    output logic [`DATA_WIDTH-1:0]  o_rs2_data_d,
-    output logic [`DATA_WIDTH-1:0]  o_imm_ext_d,
-
-    // Register addresses
-    output logic [`REG_ADDR_WIDTH-1:0] o_rs1_addr_d,
-    output logic [`REG_ADDR_WIDTH-1:0] o_rs2_addr_d,
-    output logic [`REG_ADDR_WIDTH-1:0] o_rd_addr_d,
-
-    // Output from IF/ID for sanity check
-    output logic [`INSTR_WIDTH-1:0]    o_instr_id,
-    output logic [`DATA_WIDTH-1:0]     o_pc_id,
-    output logic [`DATA_WIDTH-1:0]     o_pc_plus_4_id
+    // Outputs to Memory Stage
+    output logic       reg_write_m_o,
+    output logic [1:0] result_src_m_o,
+    output logic       mem_write_m_o,
+    output logic [`DATA_WIDTH-1:0] alu_result_m_o,
+    output logic [`DATA_WIDTH-1:0] rs2_data_m_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_m_o,
+    output logic [`DATA_WIDTH-1:0] pc_plus_4_m_o,
+// change start
+    output logic [2:0] funct3_m_o          // Output for pipelined funct3
+// change end
 );
 
-    // Signals between IF/ID and Decode
-    logic [`INSTR_WIDTH-1:0]    instr_id_val;
-    logic [`DATA_WIDTH-1:0]     pc_id_val;
-    logic [`DATA_WIDTH-1:0]     pc_plus_4_id_val;
+    localparam CTL_NOP_REG_WRITE  = 1'b0;
+    localparam CTL_NOP_MEM_WRITE  = 1'b0;
 
-    // IF/ID Register instance
-    // Note: stall_d and flush_d control the *output* of IF/ID (input to Decode)
-    // stall_d for IF/ID means Decode stage is stalled, so IF/ID holds.
-    if_id_register u_if_id_reg (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .stall_d        (i_if_id_stall_d), // Stall signal for IF/ID (from Hazard Unit usually)
-        .flush_d        (i_if_id_flush_d), // Flush signal for IF/ID
-        .instr_f_i      (i_instr_f),
-        .pc_f_i         (i_pc_f),
-        .pc_plus_4_f_i  (i_pc_plus_4_f),
-        .instr_id_o     (instr_id_val),
-        .pc_id_o        (pc_id_val),
-        .pc_plus_4_id_o (pc_plus_4_id_val)
-    );
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            reg_write_m_o    <= CTL_NOP_REG_WRITE;
+            result_src_m_o   <= 2'b00;
+            mem_write_m_o    <= CTL_NOP_MEM_WRITE;
+            alu_result_m_o   <= {`DATA_WIDTH{1'b0}};
+            rs2_data_m_o     <= {`DATA_WIDTH{1'b0}};
+            rd_addr_m_o      <= {`REG_ADDR_WIDTH{1'b0}};
+            pc_plus_4_m_o    <= {`DATA_WIDTH{1'b0}};
+// change start
+            funct3_m_o       <= 3'b000;
+// change end
+        end else begin
+            reg_write_m_o    <= reg_write_e_i;
+            result_src_m_o   <= result_src_e_i;
+            mem_write_m_o    <= mem_write_e_i;
+            alu_result_m_o   <= alu_result_e_i;
+            rs2_data_m_o     <= rs2_data_e_i;
+            rd_addr_m_o      <= rd_addr_e_i;
+            pc_plus_4_m_o    <= pc_plus_4_e_i;
+// change start
+            funct3_m_o       <= funct3_e_i;
+// change end
+        end
+    end
+endmodule
 
-    // Decode Stage instance
-    decode u_decode (
-        .clk                (clk),
-        .rst_n              (rst_n),
-        .instr_id_i         (instr_id_val),
-        .pc_id_i            (pc_id_val),
-        .pc_plus_4_id_i     (pc_plus_4_id_val),
-        .rd_write_en_wb_i   (i_wb_write_en),     // From testbench for WB sim
-        .rd_addr_wb_i       (i_wb_rd_addr),      // From testbench for WB sim
-        .rd_data_wb_i       (i_wb_rd_data),      // From testbench for WB sim
-        .reg_write_d_o      (o_reg_write_d),
-        .result_src_d_o     (o_result_src_d),
-        .mem_write_d_o      (o_mem_write_d),
-        .jump_d_o           (o_jump_d),
-        .branch_d_o         (o_branch_d),
-        .alu_src_d_o        (o_alu_src_d),
-        .alu_control_d_o    (o_alu_control_d),
-        .pc_d_o             (o_pc_d),
-        .pc_plus_4_d_o      (o_pc_plus_4_d),
-        .rs1_data_d_o       (o_rs1_data_d),
-        .rs2_data_d_o       (o_rs2_data_d),
-        .imm_ext_d_o        (o_imm_ext_d),
-        .rs1_addr_d_o       (o_rs1_addr_d),
-        .rs2_addr_d_o       (o_rs2_addr_d),
-        .rd_addr_d_o        (o_rd_addr_d)
-    );
 
-    // Assign IF/ID outputs for observation
-    assign o_instr_id     = instr_id_val;
-    assign o_pc_id        = pc_id_val;
-    assign o_pc_plus_4_id = pc_plus_4_id_val;
+--- File: rtl/core/alu.sv ---
+// rtl/core/alu.sv
+`include "common/defines.svh"
+`include "common/alu_defines.svh" // Will use new defines
+
+module alu (
+    input  logic [`DATA_WIDTH-1:0]     operand_a,
+    input  logic [`DATA_WIDTH-1:0]     operand_b,
+    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control, // Unified control signal
+    output logic [`DATA_WIDTH-1:0]     result,
+    output logic                       zero_flag
+);
+
+    logic [`DATA_WIDTH-1:0] result_comb;
+    logic [5:0]             shift_amount; // For RV64, shift by lower 6 bits of operand_b
+
+    assign shift_amount = operand_b[5:0];
+
+    always_comb begin
+        result_comb = {`DATA_WIDTH{1'bx}}; // Default to 'x'
+
+        case (alu_control)
+            `ALU_OP_ADD:  result_comb = operand_a + operand_b;
+            `ALU_OP_SUB:  result_comb = operand_a - operand_b;
+            `ALU_OP_SLL:  result_comb = operand_a << shift_amount;
+            `ALU_OP_SLT:  result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+            `ALU_OP_SLTU: result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+            `ALU_OP_XOR:  result_comb = operand_a ^ operand_b;
+            `ALU_OP_SRL:  result_comb = operand_a >> shift_amount;
+            `ALU_OP_SRA:  result_comb = $signed(operand_a) >>> shift_amount;
+            `ALU_OP_OR:   result_comb = operand_a | operand_b;
+            `ALU_OP_AND:  result_comb = operand_a & operand_b;
+            // `ALU_OP_PASS_B: result_comb = operand_b; // If we had this explicit op
+            default:      result_comb = {`DATA_WIDTH{1'bx}}; // Undefined operation
+        endcase
+    end
+
+    assign result = result_comb;
+    assign zero_flag = (result_comb == {`DATA_WIDTH{1'b0}});
 
 endmodule
 
 
---- File: tests/unit/fetch_tb.cpp ---
-#include "Vfetch_tb.h"
-#include "verilated.h"
-#include "verilated_vcd_c.h"
-
-#include <iostream>
-#include <iomanip>
-#include <cstdint>
-#include <vector>
-
-// В defines.svh INSTR_WIDTH = 32, DATA_WIDTH = 64
-const uint32_t NOP_INSTRUCTION = 0x00000013;
-
-vluint64_t sim_time = 0;
-
-void tick(Vfetch_tb* dut, VerilatedVcdC* tfp) {
-    dut->clk = 0;
-    dut->eval();
-    if (tfp) tfp->dump(sim_time);
-    sim_time++;
-
-    dut->clk = 1;
-    dut->eval();
-    if (tfp) tfp->dump(sim_time);
-    sim_time++;
-}
-
-void reset_dut(Vfetch_tb* dut, VerilatedVcdC* tfp) {
-    dut->rst_n = 0;
-    // Initialize inputs to known safe values during reset
-    dut->i_stall_f = 0;
-    dut->i_pc_src_e = 0;
-    dut->i_pc_target_e = 0;
-    dut->i_stall_d = 0;
-    dut->i_flush_d = 0;
-    for (int i = 0; i < 5; ++i) { // Hold reset for a few cycles
-        tick(dut, tfp);
-    }
-    dut->rst_n = 1;
-    tick(dut, tfp); // One tick out of reset
-    std::cout << "DUT Reset" << std::endl;
-}
-
-
-int main(int argc, char** argv) {
-    Verilated::commandArgs(argc, argv);
-    Vfetch_tb* top = new Vfetch_tb;
-
-    Verilated::traceEverOn(true);
-    VerilatedVcdC* tfp = new VerilatedVcdC;
-    top->trace(tfp, 99);
-    tfp->open("tb_fetch.vcd");
-
-    std::cout << "Starting Fetch Stage Testbench" << std::endl;
-
-    reset_dut(top, tfp);
-
-    // Test Case 1: Basic sequential fetch
-    std::cout << "Test Case 1: Sequential Fetch" << std::endl;
-    top->i_stall_f = 0;
-    top->i_pc_src_e = 0;
-    top->i_pc_target_e = 0; // Don't care
-    top->i_stall_d = 0;
-    top->i_flush_d = 0;
-
-    // Cycle 1: PC=0, Fetch instr @0. IF/ID gets this after this cycle.
-    tick(top, tfp);
-    std::cout << "  PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected after reset and first tick: PC_F=0. IF/ID output still from reset state or previous garbage before first valid data.
-    // After PC=0 is fetched, on the NEXT rising edge, IF/ID will latch PC=0 and Instr @0.
-
-    // Cycle 2: PC=0 latched into IF/ID. Fetch stage moves to PC=4.
-    tick(top, tfp);
-    std::cout << "  PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=4. IF/ID PC=0, Instr = mem[0] (0x00100093)
-
-    // Cycle 3: PC=4 latched into IF/ID. Fetch stage moves to PC=8.
-    tick(top, tfp);
-    std::cout << "  PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=8. IF/ID PC=4, Instr = mem[1] (0x00200113)
-
-
-    // Test Case 2: Stall Fetch (StallF)
-    std::cout << "\nTest Case 2: Stall Fetch (stall_f)" << std::endl;
-    top->i_stall_f = 1; // Stall PC update
-    top->i_stall_d = 0; // IF/ID register loads normally
-    // PC_F was 8. It should remain 8. Instr_F will be from PC=8.
-    // IF/ID will latch current Instr_F and PC_F+4.
-    // Previous IF/ID instr was mem[1] (from PC=4).
-    tick(top, tfp); // PC=8 (stalled), instr_f = mem[8/4=2]. IF/ID gets (instr @ PC=8, PC=8+4)
-    std::cout << "  StallF=1. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=8. IF/ID PC=8, Instr = mem[2] (0x00308193)
-
-    tick(top, tfp); // PC=8 (still stalled), instr_f = mem[8/4=2]. IF/ID re-latches same values.
-    std::cout << "  StallF=1. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=8. IF/ID PC=8, Instr = mem[2]
-
-    top->i_stall_f = 0; // Release stall_f
-
-
-    // Test Case 3: Stall Decode (StallD)
-    std::cout << "\nTest Case 3: Stall Decode (stall_d)" << std::endl;
-    // PC_F was 8. Now stall_f=0, so PC will advance to 12. instr_f = mem[12/4=3].
-    // IF/ID was (PC=8, instr=mem[2]). Now stall_d=1, so IF/ID holds its value.
-    top->i_stall_d = 1;
-    tick(top, tfp);
-    std::cout << "  StallD=1. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=12 (0xC). IF/ID PC=8, Instr = mem[2] (holds previous)
-
-    // PC_F advances to 16. instr_f = mem[16/4=4].
-    // IF/ID still holds (PC=8, instr=mem[2]).
-    tick(top, tfp);
-    std::cout << "  StallD=1. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=16 (0x10). IF/ID PC=8, Instr = mem[2]
-
-    top->i_stall_d = 0; // Release stall_d
-
-
-    // Test Case 4: Flush Decode (FlushD)
-    std::cout << "\nTest Case 4: Flush Decode (flush_d)" << std::endl;
-    // PC_F was 16. Now stall_d=0, PC advances to 20. instr_f = mem[20/4=5].
-    // IF/ID was (PC=8, instr=mem[2]). Now flush_d=1. IF/ID should be NOP.
-    top->i_flush_d = 1;
-    tick(top, tfp);
-    std::cout << "  FlushD=1. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=20 (0x14). IF/ID PC=0, Instr = NOP (0x13)
-
-    top->i_flush_d = 0; // Release flush_d
-    tick(top, tfp); // PC_F advances to 24. IF/ID gets (instr @ PC=20, PC=20+4)
-    std::cout << "  FlushD=0. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=24 (0x18). IF/ID PC=20, Instr = mem[5]
-
-    // Test Case 5: Branch Taken (pc_src_e)
-    std::cout << "\nTest Case 5: Branch Taken" << std::endl;
-    top->i_pc_src_e = 1;
-    top->i_pc_target_e = 0x100; // Jump to address 0x100
-    // PC_F was 24. Next PC should be 0x100. instr_f will be mem[0x100/4].
-    // IF/ID was (PC=20, instr=mem[5]). IF/ID gets (instr @ PC=0x100, PC=0x100+4)
-    tick(top, tfp);
-    std::cout << "  Branch. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=0x100. IF/ID PC=0x100, Instr = mem[0x100/4] (which is NOP by default init)
-
-    top->i_pc_src_e = 0; // Next cycle, no branch
-    tick(top, tfp); // PC_F advances to 0x104. IF/ID gets (instr @ PC=0x100, PC=0x100+4)
-    std::cout << "  After Branch. PC_F: 0x" << std::hex << top->o_current_pc_f
-              << " -> IF/ID PC: 0x" << top->o_pc_id
-              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
-    // Expected: PC_F=0x104. IF/ID PC=0x100, Instr = mem[0x100/4]
-
-
-    std::cout << "\nFetch Stage Testbench Finished." << std::endl;
-
-    if (tfp) tfp->close();
-    delete top;
-    return 0;
-}
-
-
---- File: tests/unit/alu.cpp ---
-// tests/unit/alu.cpp
-#include "Valu.h" // Verilator generated header for alu module
-#include "verilated.h"
-#include "verilated_vcd_c.h"
-
-#include <iostream>
-#include <iomanip>
-#include <cassert>
-#include <cstdint>
-#include <string>
-#include <vector>
-#include <bitset>
-
-// New ALU Control Opcodes (from alu_defines.svh)
-const uint8_t ALU_OP_ADD  = 0b0000;
-const uint8_t ALU_OP_SUB  = 0b0001;
-const uint8_t ALU_OP_SLL  = 0b0010;
-const uint8_t ALU_OP_SLT  = 0b0011;
-const uint8_t ALU_OP_SLTU = 0b0100;
-const uint8_t ALU_OP_XOR  = 0b0101;
-const uint8_t ALU_OP_SRL  = 0b0110;
-const uint8_t ALU_OP_SRA  = 0b0111;
-const uint8_t ALU_OP_OR   = 0b1000;
-const uint8_t ALU_OP_AND  = 0b1001;
-// const uint8_t ALU_OP_PASS_B = 0b1010; // If added
-
-vluint64_t sim_time = 0;
-
-// Verilator simulation time function (if not using sc_core::sc_time_stamp)
-double sc_time_stamp() {
-    return sim_time;
-}
-
-void eval_alu(Valu* alu_core, VerilatedVcdC* tfp) {
-    alu_core->eval();
-    if (tfp) tfp->dump(sim_time);
-}
-
-struct AluTestCase {
-    uint64_t a, b;
-    uint8_t alu_control_val; // Changed from alu_op_sel and alu_mod
-    uint64_t expected_res;
-    bool expected_zero;
-    std::string name;
-};
-
-int main(int argc, char** argv) {
-    Verilated::commandArgs(argc, argv);
-    Valu* top = new Valu; // Name of the Verilog module is 'alu', Verilator prepends 'V'
-
-    Verilated::traceEverOn(true);
-    VerilatedVcdC* tfp = new VerilatedVcdC;
-    top->trace(tfp, 99);
-    tfp->open("tb_alu.vcd");
-
-    std::cout << "Starting Unified ALU Testbench (RV64)" << std::endl;
-
-    AluTestCase tests[] = {
-        // ADD tests
-        {5, 10, ALU_OP_ADD, 15, false, "ADD 5+10"},
-        {0xFFFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0, true, "ADD -1+1 (wrap)"},
-        {0x7FFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0x8000000000000000ULL, false, "ADD MAX_POS+1 (signed ovf)"},
-
-        // SUB tests
-        {10, 5, ALU_OP_SUB, 5, false, "SUB 10-5"},
-        {5, 10, ALU_OP_SUB, (uint64_t)-5, false, "SUB 5-10"},
-        {0x8000000000000000ULL, 1, ALU_OP_SUB, 0x7FFFFFFFFFFFFFFFULL, false, "SUB MIN_NEG-1 (signed ovf)"},
-        {10, 10, ALU_OP_SUB, 0, true, "SUB 10-10 (zero)"},
-
-        // Logical tests
-        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_AND, 0x00ULL, true, "AND all zeros"},
-        {0xF0F0F0F0F0F0F0F0ULL, 0xFFFFFFFFFFFFFFFFULL, ALU_OP_AND, 0xF0F0F0F0F0F0F0F0ULL, false, "AND with FFs"},
-        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_OR,  0xFFFFFFFFFFFFFFFFULL, false, "OR"},
-        {0xFF00FF00FF00FF00ULL, 0x00FFFF00FFFF00FFULL, ALU_OP_XOR, 0xFFFF000000FFFFFFULL, false, "XOR"},
-
-        // SLT / SLTU tests
-        {5, 10, ALU_OP_SLT, 1, false, "SLT 5<10 (signed)"},
-        {10, 5, ALU_OP_SLT, 0, true, "SLT 10<5 (signed)"},
-        {(uint64_t)-5, 2, ALU_OP_SLT, 1, false, "SLT -5<2 (signed)"},
-        {2, (uint64_t)-5, ALU_OP_SLT, 0, true, "SLT 2<-5 (signed)"},
-        {(uint64_t)-10, (uint64_t)-5, ALU_OP_SLT, 1, false, "SLT -10<-5 (signed)"},
-
-        {5, 10, ALU_OP_SLTU, 1, false, "SLTU 5<10 (unsigned)"},
-        {10, 5, ALU_OP_SLTU, 0, true, "SLTU 10<5 (unsigned)"},
-        {(uint64_t)-5, 2, ALU_OP_SLTU, 0, true, "SLTU large_val<2 (unsigned, -5 is large positive)"}, // -5ULL is large positive
-        {2, (uint64_t)-5, ALU_OP_SLTU, 1, false, "SLTU 2<large_val (unsigned)"},
-
-        // Shift tests
-        {0x1ULL, 3, ALU_OP_SLL, 0x8ULL, false, "SLL 1<<3 (shamt=3)"},
-        {0xABCDEF0123456789ULL, 64, ALU_OP_SLL, 0xABCDEF0123456789ULL, false, "SLL by 64 (actual shamt=0)"}, // operand_b[5:0] is 0
-        {0xABCDEF0123456789ULL, 0, ALU_OP_SLL, 0xABCDEF0123456789ULL, false, "SLL by 0"},
-
-        {0xF00000000000000FULL, 4, ALU_OP_SRL, 0x0F00000000000000ULL, false, "SRL positive val"},
-        {0x8000000000000000ULL, 1, ALU_OP_SRL, 0x4000000000000000ULL, false, "SRL MSB set val"},
-
-        {0x8000000000000000ULL, 1, ALU_OP_SRA, 0xC000000000000000ULL, false, "SRA negative val"},
-        {0x4000000000000000ULL, 1, ALU_OP_SRA, 0x2000000000000000ULL, false, "SRA positive val"},
-        {0xFFFFFFFFFFFFFFF0ULL, 4, ALU_OP_SRA, 0xFFFFFFFFFFFFFFFFULL, false, "SRA -16 >> 4 = -1"}
-
-        // Test for PASS_B if added
-        // {123, 456, ALU_OP_PASS_B, 456, false, "PASS_B"}
-    };
-
-    int num_tests = sizeof(tests) / sizeof(AluTestCase);
-    int passed_tests = 0;
-
-    for (int i = 0; i < num_tests; ++i) {
-        AluTestCase& t = tests[i];
-
-        top->operand_a = t.a;
-        top->operand_b = t.b;
-        top->alu_control = t.alu_control_val; // Use the new unified control signal
-
-        eval_alu(top, tfp);
-        sim_time++; // Increment simulation time for VCD
-
-        bool pass = (top->result == t.expected_res) &&
-                    (top->zero_flag == t.expected_zero);
-
-        if (pass) {
-            passed_tests++;
-        } else {
-            std::cout << "FAIL Test: " << t.name << std::endl;
-            std::cout << "  Input: A=0x" << std::hex << t.a << ", B=0x" << t.b
-                      << ", ALUControl=0b" << std::bitset<4>(t.alu_control_val) << std::dec << std::endl;
-            std::cout << "  Got  : Res=0x" << std::hex << top->result << ", Zero=" << (int)top->zero_flag << std::dec << std::endl;
-            std::cout << "  Exp  : Res=0x" << std::hex << t.expected_res << ", Zero=" << (int)t.expected_zero << std::dec << std::endl;
-        }
-        assert(pass); // Stop on first failure for easier debugging
-    }
-
-    std::cout << "\nUnified ALU Testbench Finished. Passed " << passed_tests << "/" << num_tests << " tests." << std::endl;
-
-    if (tfp) tfp->close();
-    delete top;
-    exit( (passed_tests == num_tests) ? EXIT_SUCCESS : EXIT_FAILURE );
-}
-
-
---- File: tests/unit/CMakeLists.txt ---
-set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl)
-
-function(add_verilator_test module_name)
-    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_${module_name})
-    set(CPP_TESTBENCH_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${module_name}.cpp)
-
-    set(RTL_SOURCES "")
-    foreach(rtl_file ${ARGN})
-        list(APPEND RTL_SOURCES "${rtl_file}")
-    endforeach()
-
-    add_custom_target(build-unit-test-${module_name} ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
-        COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
-                -Wall --Wno-fatal --cc --exe --build --trace
-                --top-module ${module_name}
-                -I${RTL_INCLUDE_PATH}
-                ${RTL_SOURCES}
-                ${CPP_TESTBENCH_FILE}
-                --Mdir "${OBJ_DIR}"
-                -CFLAGS "-std=c++17 -Wall"
-        DEPENDS ${RTL_SOURCES} ${CPP_TESTBENCH_FILE}
-        COMMENT "Verilating and Building executable for ${module_name}"
-        VERBATIM
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-
-    add_custom_target(run-unit-test-${module_name}
-        COMMAND "${OBJ_DIR}/V${module_name}"
-        DEPENDS "build-unit-test-${module_name}"
-        WORKING_DIRECTORY ${OBJ_DIR}
-        COMMENT "Running Verilated test for ${module_name}"
-        VERBATIM
-    )
-
-    if(TARGET tests_full)
-        add_dependencies(tests_full run-unit-test-${module_name})
-    endif()
-endfunction()
-
-
-add_verilator_test(
-    alu
-    ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
-)
-
-
-add_verilator_test(
-    fetch_tb
-    ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
-    ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
-    ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
-    ${CMAKE_SOURCE_DIR}/tests/unit/fetch_tb.sv
-)
-
-add_verilator_test(
-    decode_tb
-    ${CMAKE_SOURCE_DIR}/rtl/core/decode.sv
-    ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
-    ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
-    ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
-    ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
-    ${CMAKE_SOURCE_DIR}/tests/unit/decode_tb.sv
-)
-
-
---- File: tests/unit/decode_tb.cpp ---
-// tests/unit/decode_tb.cpp
-#include "Vdecode_tb.h"
-#include "verilated.h"
-#include "verilated_vcd_c.h"
-
-#include <iostream>
-#include <iomanip>
-#include <cstdint>
-#include <vector>
-#include <string>
-#include <map>
-#include <bitset> // For printing ALU control in binary
-
-// MANUALLY DEFINED CONSTANTS (mirroring .svh files for testbench use)
-
-// From common/alu_defines.svh
-const int ALU_CONTROL_WIDTH = 4; // Needs 4 bits for ~10 operations
-const uint8_t ALU_OP_ADD  = 0b0000;
-const uint8_t ALU_OP_SUB  = 0b0001;
-const uint8_t ALU_OP_SLL  = 0b0010;
-const uint8_t ALU_OP_SLT  = 0b0011;
-const uint8_t ALU_OP_SLTU = 0b0100;
-const uint8_t ALU_OP_XOR  = 0b0101;
-const uint8_t ALU_OP_SRL  = 0b0110;
-const uint8_t ALU_OP_SRA  = 0b0111;
-const uint8_t ALU_OP_OR   = 0b1000;
-const uint8_t ALU_OP_AND  = 0b1001;
-
-// From common/riscv_opcodes.svh (only those needed for test case generation/verification)
-// Opcodes (not strictly needed if instructions are pre-calculated, but good for clarity)
-// const uint8_t OPCODE_LUI     = 0b0110111;
-// const uint8_t OPCODE_AUIPC   = 0b0010111;
-// const uint8_t OPCODE_JAL     = 0b1101111;
-// const uint8_t OPCODE_JALR    = 0b1100111;
-// const uint8_t OPCODE_BRANCH  = 0b1100011;
-// const uint8_t OPCODE_LOAD    = 0b0000011;
-const uint8_t OPCODE_STORE   = 0b0100011;
-// const uint8_t OPCODE_OP_IMM  = 0b0010011;
-// const uint8_t OPCODE_OP      = 0b0110011;
-
-// General defines
-const uint32_t NOP_INSTRUCTION = 0x00000013; // addi x0, x0, 0
-
-vluint64_t sim_time = 0;
-
-void tick(Vdecode_tb* dut, VerilatedVcdC* tfp) {
-    dut->clk = 0;
-    dut->eval();
-    if (tfp) tfp->dump(sim_time);
-    sim_time++;
-
-    dut->clk = 1;
-    dut->eval();
-    if (tfp) tfp->dump(sim_time);
-    sim_time++;
-}
-
-void reset_dut(Vdecode_tb* dut, VerilatedVcdC* tfp) {
-    dut->rst_n = 0;
-    dut->i_if_id_stall_d = 0;
-    dut->i_if_id_flush_d = 0;
-    dut->i_instr_f = NOP_INSTRUCTION;
-    dut->i_pc_f = 0;
-    dut->i_pc_plus_4_f = 4;
-    dut->i_wb_write_en = 0;
-    dut->i_wb_rd_addr = 0;
-    dut->i_wb_rd_data = 0;
-
-    for (int i = 0; i < 5; ++i) {
-        tick(dut, tfp);
-    }
-    dut->rst_n = 1;
-    tick(dut, tfp);
-    std::cout << "DUT Reset" << std::endl;
-}
-
-void set_reg(Vdecode_tb* dut, VerilatedVcdC* tfp, uint8_t reg_addr, uint64_t data) {
-    if (reg_addr == 0) return;
-
-    dut->i_wb_write_en = 1;
-    dut->i_wb_rd_addr = reg_addr;
-    dut->i_wb_rd_data = data;
-    tick(dut, tfp);
-    dut->i_wb_write_en = 0;
-}
-
-struct ExpectedControls {
-    bool        reg_write;
-    uint8_t     result_src;
-    bool        mem_write;
-    bool        jump;
-    bool        branch;
-    bool        alu_src;
-    uint8_t     alu_control;
-};
-
-struct DecodeTestCase {
-    std::string name;
-    uint32_t    instruction;
-    uint64_t    pc_val;
-    std::map<uint8_t, uint64_t> initial_regs;
-    ExpectedControls controls;
-    uint64_t    expected_rs1_data;
-    uint64_t    expected_rs2_data;
-    uint64_t    expected_imm_ext;
-    uint8_t     expected_rs1_addr;
-    uint8_t     expected_rs2_addr;
-    uint8_t     expected_rd_addr;
-};
-
-// Helper to extract fields from instruction for verification in C++
-uint8_t get_opcode_cpp(uint32_t instr) { return instr & 0x7F; } // Not used if instructions are pre-encoded
-uint8_t get_rd_cpp(uint32_t instr) { return (instr >> 7) & 0x1F; }
-// uint8_t get_funct3_cpp(uint32_t instr) { return (instr >> 12) & 0x07; } // Not used if instructions are pre-encoded
-uint8_t get_rs1_cpp(uint32_t instr) { return (instr >> 15) & 0x1F; }
-uint8_t get_rs2_cpp(uint32_t instr) { return (instr >> 20) & 0x1F; }
-
-
-int main(int argc, char** argv) {
-    Verilated::commandArgs(argc, argv);
-    Vdecode_tb* top = new Vdecode_tb;
-
-    Verilated::traceEverOn(true);
-    VerilatedVcdC* tfp = new VerilatedVcdC;
-    top->trace(tfp, 99);
-    tfp->open("tb_decode.vcd");
-
-    std::cout << "Starting Decode Stage Testbench" << std::endl;
-
-    reset_dut(top, tfp);
-
-    std::vector<DecodeTestCase> test_cases = {
-        // Test cases from previous response... (no change here, they use the C++ consts now)
-        {
-            "ADDI x1, x2, 10", 0x00A10093, 0x100, // ADDI x1, x2, 10 (10_decimal = 0xA)
-            {{2, 0x200}}, // x2 = 0x200
-            {true, 0b00, false, false, false, true, ALU_OP_ADD},
-            0x200, 0x0, 0xA, 2, 0, 1 // rs1=x2, rs2=n/a, rd=x1
-        },
-        {
-            "ADD x3, x1, x2", 0x002081B3, 0x104, // ADD x3, x1, x2
-            {{1, 0x10}, {2, 0x20}}, // x1 = 0x10, x2 = 0x20
-            {true, 0b00, false, false, false, false, ALU_OP_ADD},
-            0x10, 0x20, 0x0, 1, 2, 3 // rs1=x1, rs2=x2, rd=x3. ImmExt can be 0.
-        },
-        {
-            "LUI x5, 0xABCD0", 0xABCD02B7, 0x108, // LUI x5, 0xABCD0 (0xABCD << 12 results in 0xABCD0000)
-            {},
-            {true, 0b00, false, false, false, true, ALU_OP_ADD}, // ALU: 0 + Imm.
-            0x0, 0x0, 0xABCD0000ULL, 0, 0, 5 // Corrected expected_imm_ext for LUI
-        },
-        {
-            "LW x6, 12(x1)", 0x00C0A303, 0x10C, // LW x6, 12(x1) (funct3=010 for LW)
-            {{1, 0x40}}, // x1 = 0x40
-            {true, 0b01, false, false, false, true, ALU_OP_ADD},
-            0x40, 0x0, 0xC, 1, 0, 6
-        },
-        {
-            "SW x7, 16(x2)", 0x01112823, 0x110, // SW x7, 16(x2) (funct3=010 for SW)
-            {{2, 0x80}, {7, 0xFFFF}},
-            {false, 0b00, true, false, false, true, ALU_OP_ADD},
-            0x80, 0xFFFF, 0x10, 2, 7, 0 // rd_addr is 0 because RegWrite is false
-        },
-        {
-            "BEQ x1, x2, +0x20", 0x02208A63, 0x114, // Corrected instruction encoding for BEQ x1, x2, +0x20
-                                                   // Offset 0x20 means imm[12|10:5|4:1|11] = 0|000010|0000|0 (B-type)
-                                                   // instr[31]=imm[12], instr[30:25]=imm[10:5], instr[11:8]=imm[4:1], instr[7]=imm[11]
-                                                   // 0x20 -> imm12=0, imm11=0, imm10_5=000010, imm4_1=0000
-                                                   // instr[31]=0, instr[30:25]=000010, instr[11:8]=0000, instr[7]=0
-                                                   // rs2=x2, rs1=x1. 0000001 00010 00001 000 00000 1100011 => 0x02208A63
-            {{1, 100}, {2, 100}},
-            {false, 0b00, false, false, true, false, ALU_OP_SUB},
-            100, 100, 0x20, 1, 2, 0 // rd_addr is 0 because RegWrite is false
-        },
-        {
-            "JAL x0, +0x40", 0x0400006F, 0x118, // JAL x0, +0x40 (target PC + 0x40)
-            {},
-            {true, 0b10, false, true, false, true, ALU_OP_ADD},
-            0, 0, 0x40, 0, 0, 0
-        },
-        {
-            "NOP", NOP_INSTRUCTION, 0x200,
-            {},
-            {true, 0b00, false, false, false, true, ALU_OP_ADD},
-            0,0,0, get_rs1_cpp(NOP_INSTRUCTION), get_rs2_cpp(NOP_INSTRUCTION), get_rd_cpp(NOP_INSTRUCTION)
-        }
-    };
-
-    int passed_count = 0;
-    for (const auto& tc : test_cases) {
-        std::cout << "\nRunning Test: " << tc.name << std::endl;
-        std::cout << "  Instruction: 0x" << std::hex << tc.instruction << std::dec << std::endl;
-
-        reset_dut(top, tfp);
-        for(const auto& reg_pair : tc.initial_regs) {
-            set_reg(top, tfp, reg_pair.first, reg_pair.second);
-        }
-        // One tick for register values to settle before IF/ID latches instruction
-        if (!tc.initial_regs.empty()) { // Only tick if registers were set
-             tick(top, tfp);
-        }
-
-
-        top->i_instr_f = tc.instruction;
-        top->i_pc_f = tc.pc_val;
-        top->i_pc_plus_4_f = tc.pc_val + 4;
-        top->i_if_id_stall_d = 0;
-        top->i_if_id_flush_d = 0;
-
-        tick(top, tfp); // Let IF/ID latch
-        tick(top, tfp); // Let Decode process
-
-        bool current_pass = true;
-        if (top->o_reg_write_d != tc.controls.reg_write) {
-            std::cout << "  FAIL: RegWrite_D. Exp: " << tc.controls.reg_write << ", Got: " << (int)top->o_reg_write_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_result_src_d != tc.controls.result_src) {
-            std::cout << "  FAIL: ResultSrc_D. Exp: " << (int)tc.controls.result_src << ", Got: " << (int)top->o_result_src_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_mem_write_d != tc.controls.mem_write) {
-            std::cout << "  FAIL: MemWrite_D. Exp: " << tc.controls.mem_write << ", Got: " << (int)top->o_mem_write_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_jump_d != tc.controls.jump) {
-            std::cout << "  FAIL: Jump_D. Exp: " << tc.controls.jump << ", Got: " << (int)top->o_jump_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_branch_d != tc.controls.branch) {
-            std::cout << "  FAIL: Branch_D. Exp: " << tc.controls.branch << ", Got: " << (int)top->o_branch_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_alu_src_d != tc.controls.alu_src) {
-            std::cout << "  FAIL: AluSrc_D. Exp: " << tc.controls.alu_src << ", Got: " << (int)top->o_alu_src_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_alu_control_d != tc.controls.alu_control) {
-            std::cout << "  FAIL: AluControl_D. Exp: 0b" << std::bitset<ALU_CONTROL_WIDTH>(tc.controls.alu_control)
-                      << ", Got: 0b" << std::bitset<ALU_CONTROL_WIDTH>(top->o_alu_control_d) << std::endl;
-            current_pass = false;
-        }
-        if (top->o_pc_d != tc.pc_val) {
-             std::cout << "  FAIL: PC_D. Exp: 0x" << std::hex << tc.pc_val << ", Got: 0x" << top->o_pc_d << std::dec << std::endl;
-            current_pass = false;
-        }
-        if (top->o_pc_plus_4_d != (tc.pc_val + 4)) {
-             std::cout << "  FAIL: PCPlus4_D. Exp: 0x" << std::hex << (tc.pc_val + 4) << ", Got: 0x" << top->o_pc_plus_4_d << std::dec << std::endl;
-            current_pass = false;
-        }
-
-        uint8_t instr_rs1_addr_val = get_rs1_cpp(tc.instruction);
-        uint64_t expected_rs1_val = (instr_rs1_addr_val == 0) ? 0 : tc.expected_rs1_data;
-        if (top->o_rs1_data_d != expected_rs1_val) {
-            std::cout << "  FAIL: Rs1Data_D. Exp: 0x" << std::hex << expected_rs1_val << ", Got: 0x" << top->o_rs1_data_d << std::dec << std::endl;
-            current_pass = false;
-        }
-
-        uint8_t instr_rs2_addr_val = get_rs2_cpp(tc.instruction);
-        uint64_t expected_rs2_val = (instr_rs2_addr_val == 0 && !(get_opcode_cpp(tc.instruction) == OPCODE_STORE)) ? 0 : tc.expected_rs2_data; // S-type uses rs2 field for data
-         if (get_opcode_cpp(tc.instruction) == OPCODE_STORE && top->o_rs2_data_d != tc.expected_rs2_data) { // Store (S-type) specific check for rs2_data
-            std::cout << "  FAIL: Rs2Data_D (Store). Exp: 0x" << std::hex << tc.expected_rs2_data << ", Got: 0x" << top->o_rs2_data_d << std::dec << std::endl;
-            current_pass = false;
-        } else if (get_opcode_cpp(tc.instruction) != OPCODE_STORE && top->o_rs2_data_d != expected_rs2_val) { // Non-store instructions
-            std::cout << "  FAIL: Rs2Data_D. Exp: 0x" << std::hex << expected_rs2_val << ", Got: 0x" << top->o_rs2_data_d << std::dec << std::endl;
-            current_pass = false;
-        }
-
-
-        if (top->o_imm_ext_d != tc.expected_imm_ext) {
-            std::cout << "  FAIL: ImmExt_D. Exp: 0x" << std::hex << tc.expected_imm_ext << ", Got: 0x" << top->o_imm_ext_d << std::dec << std::endl;
-            current_pass = false;
-        }
-        if (top->o_rs1_addr_d != tc.expected_rs1_addr) {
-            std::cout << "  FAIL: Rs1Addr_D. Exp: " << (int)tc.expected_rs1_addr << ", Got: " << (int)top->o_rs1_addr_d << std::endl;
-            current_pass = false;
-        }
-         if (top->o_rs2_addr_d != tc.expected_rs2_addr) {
-            std::cout << "  FAIL: Rs2Addr_D. Exp: " << (int)tc.expected_rs2_addr << ", Got: " << (int)top->o_rs2_addr_d << std::endl;
-            current_pass = false;
-        }
-        if (top->o_rd_addr_d != tc.expected_rd_addr) {
-            std::cout << "  FAIL: RdAddr_D. Exp: " << (int)tc.expected_rd_addr << ", Got: " << (int)top->o_rd_addr_d << std::endl;
-            current_pass = false;
-        }
-
-        if (current_pass) {
-            std::cout << "  PASS" << std::endl;
-            passed_count++;
-        } else {
-            std::cout << "  FAILED" << std::endl;
-        }
-    }
-
-    std::cout << "\nDecode Stage Testbench Finished. Passed " << passed_count << "/" << test_cases.size() << " detailed test cases." << std::endl;
-
-    if (tfp) tfp->close();
-    delete top;
-    return (passed_count == test_cases.size()) ? EXIT_SUCCESS : EXIT_FAILURE;
-}
-
-
---- File: tests/unit/fetch_tb.sv ---
+--- File: rtl/core/memory_stage.sv ---
+// rtl/core/memory.sv (Memory Stage Logic)
 `include "common/defines.svh"
 
-module fetch_tb (
+module memory_stage ( // Changed module name to memory_stage to avoid conflict with data_memory if in same scope
     input  logic clk,
     input  logic rst_n,
 
-    // Inputs to control fetch stage behavior
-    input  logic                       i_stall_f,
-    input  logic                       i_pc_src_e,
-    input  logic [`DATA_WIDTH-1:0]     i_pc_target_e,
-    input  logic                       i_stall_d,
-    input  logic                       i_flush_d,
+    // Inputs from EX/MEM Register
+    input  logic       reg_write_m_i,
+    input  logic [1:0] result_src_m_i, // 00:ALU, 01:MemRead, 10:PC+4
+    input  logic       mem_write_m_i,    // Enable for data memory write
+    input  logic [2:0] funct3_m_i,       // For load/store type
 
-    // Outputs from IF/ID register (to observe)
-    output logic [`INSTR_WIDTH-1:0]    o_instr_id,
-    output logic [`DATA_WIDTH-1:0]     o_pc_plus_4_id,
-    output logic [`DATA_WIDTH-1:0]     o_pc_id,
-    output logic [`DATA_WIDTH-1:0]     o_current_pc_f // For observing PC in fetch stage itself
+    input  logic [`DATA_WIDTH-1:0]     alu_result_m_i, // Address for memory or result from ALU
+    input  logic [`DATA_WIDTH-1:0]     rs2_data_m_i,   // Data to store in memory
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_m_i,
+    input  logic [`DATA_WIDTH-1:0]     pc_plus_4_m_i,
+
+    // Outputs to MEM/WB Register
+    output logic       reg_write_w_o,
+    output logic [1:0] result_src_w_o,
+    // mem_write is consumed here
+
+    output logic [`DATA_WIDTH-1:0]     read_data_w_o,  // Data read from memory
+    output logic [`DATA_WIDTH-1:0]     alu_result_w_o, // ALU result passed through
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_w_o,
+    output logic [`DATA_WIDTH-1:0]     pc_plus_4_w_o
 );
 
-    logic [`INSTR_WIDTH-1:0]    instr_f_val;
-    logic [`DATA_WIDTH-1:0]     pc_plus_4_f_val;
-    logic [`DATA_WIDTH-1:0]     pc_f_val;
+    logic [`DATA_WIDTH-1:0] mem_read_data_internal;
 
+    // Data Memory Instance
+    data_memory u_data_memory (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .addr_i         (alu_result_m_i),   // Address is ALU result
+        .write_data_i   (rs2_data_m_i),     // Data to write is from rs2
+        .mem_write_en_i (mem_write_m_i),    // Write enable
+        .funct3_i       (funct3_m_i),       // For store type (SB/SH/SW/SD) and load type
+        .read_data_o    (mem_read_data_internal) // Data read
+    );
+
+    // Pass through control signals
+    assign reg_write_w_o  = reg_write_m_i;
+    assign result_src_w_o = result_src_m_i;
+
+    // Pass through data
+    assign read_data_w_o  = mem_read_data_internal;
+    assign alu_result_w_o = alu_result_m_i;
+    assign rd_addr_w_o    = rd_addr_m_i;
+    assign pc_plus_4_w_o  = pc_plus_4_m_i;
+
+endmodule
+
+
+--- File: rtl/core/memory.sv ---
+
+
+
+--- File: rtl/core/fetch.sv ---
+`include "common/defines.svh"
+
+module fetch (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Control signals from Hazard Unit / Execute Stage
+    input  logic                       stall_f,     // Stall PC and instruction fetch
+    input  logic                       pc_src_e,    // Selects PC source (PC+4 or branch/jump target)
+    input  logic [`DATA_WIDTH-1:0]     pc_target_e, // Branch/jump target address from EX stage
+
+    // Outputs to IF/ID pipeline register
+    output logic [`INSTR_WIDTH-1:0]    instr_f_o,
+    output logic [`DATA_WIDTH-1:0]     pc_plus_4_f_o,
+    output logic [`DATA_WIDTH-1:0]     pc_f_o          // Current PC fetched
+);
+
+    logic [`DATA_WIDTH-1:0] pc_reg;
+    logic [`DATA_WIDTH-1:0] pc_next;
+    logic [`DATA_WIDTH-1:0] pc_plus_4_temp;
+
+    // Instruction Memory instance
+    instruction_memory i_instr_mem (
+        .address     (pc_reg),
+        .instruction (instr_f_o)
+    );
+
+    // Adder for PC + 4
+    assign pc_plus_4_temp = pc_reg + 4;
+
+    // MUX for next PC selection
+    assign pc_next = pc_src_e ? pc_target_e : pc_plus_4_temp;
+
+    // PC Register
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pc_reg <= {`DATA_WIDTH{1'b0}}; // Reset PC to 0
+        end else if (!stall_f) begin // If not stalled, update PC
+            pc_reg <= pc_next;
+        end
+        // If stalled (stall_f = 1), PC holds its value
+    end
+
+    assign pc_plus_4_f_o = pc_plus_4_temp;
+    assign pc_f_o        = pc_reg; // Output current PC
+
+endmodule
+
+
+--- File: rtl/core/mem_wb_register.sv ---
+// rtl/core/mem_wb_register.sv
+`include "common/defines.svh"
+
+module mem_wb_register (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Inputs from Memory Stage
+    input  logic       reg_write_m_i,    // RegWriteW on diagram
+    input  logic [1:0] result_src_m_i,   // ResultSrcW on diagram
+
+    input  logic [`DATA_WIDTH-1:0]     read_data_m_i,  // ReadDataW on diagram
+    input  logic [`DATA_WIDTH-1:0]     alu_result_m_i, // ALUResultW (passed from EX/MEM to MEM/WB)
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_m_i,    // RdW on diagram
+    input  logic [`DATA_WIDTH-1:0]     pc_plus_4_m_i,  // PCPlus4W on diagram
+
+    // Outputs to Writeback Stage
+    output logic       reg_write_wb_o,
+    output logic [1:0] result_src_wb_o,
+
+    output logic [`DATA_WIDTH-1:0]     read_data_wb_o,
+    output logic [`DATA_WIDTH-1:0]     alu_result_wb_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_o,
+    output logic [`DATA_WIDTH-1:0]     pc_plus_4_wb_o
+);
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            reg_write_wb_o  <= 1'b0;
+            result_src_wb_o <= 2'b00; // Default to ALUResult path
+
+            read_data_wb_o  <= {`DATA_WIDTH{1'b0}};
+            alu_result_wb_o <= {`DATA_WIDTH{1'b0}};
+            rd_addr_wb_o    <= {`REG_ADDR_WIDTH{1'b0}};
+            pc_plus_4_wb_o  <= {`DATA_WIDTH{1'b0}};
+        end else begin
+            // No stall/flush inputs to this register in the P&H diagram for simplicity
+            // Stalls usually handled before EX, flushes clear earlier stages.
+            reg_write_wb_o  <= reg_write_m_i;
+            result_src_wb_o <= result_src_m_i;
+
+            read_data_wb_o  <= read_data_m_i;
+            alu_result_wb_o <= alu_result_m_i;
+            rd_addr_wb_o    <= rd_addr_m_i;
+            pc_plus_4_wb_o  <= pc_plus_4_m_i;
+        end
+    end
+endmodule
+
+
+--- File: rtl/core/id_ex_register.sv ---
+// rtl/core/id_ex_register.sv
+`include "common/defines.svh"
+`include "common/alu_defines.svh"
+`include "common/control_signals_defines.svh" // New include
+
+module id_ex_register (
+    input  logic clk,
+    input  logic rst_n,
+
+    input  logic stall_e,
+    input  logic flush_e,
+
+    // Inputs from Decode Stage
+    input  logic       reg_write_d_i,
+    input  logic [1:0] result_src_d_i,
+    input  logic       mem_write_d_i,
+    input  logic       jump_d_i,
+    input  logic       branch_d_i,
+    input  logic       alu_src_d_i,
+    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_i,
+    input  logic [2:0] funct3_d_i,
+    input  alu_a_src_sel_e op_a_sel_d_i,
+    input  pc_target_src_sel_e pc_target_src_sel_d_i,
+
+    input  logic [`DATA_WIDTH-1:0]  pc_d_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_d_i,
+    input  logic [`DATA_WIDTH-1:0]  rs1_data_d_i,
+    input  logic [`DATA_WIDTH-1:0]  rs2_data_d_i,
+    input  logic [`DATA_WIDTH-1:0]  imm_ext_d_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_d_i,
+
+    // Outputs to Execute Stage
+    output logic       reg_write_e_o,
+    output logic [1:0] result_src_e_o,
+    output logic       mem_write_e_o,
+    output logic       jump_e_o,
+    output logic       branch_e_o,
+    output logic       alu_src_e_o,
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_e_o,
+    output logic [2:0] funct3_e_o,
+    output alu_a_src_sel_e op_a_sel_e_o,
+    output pc_target_src_sel_e pc_target_src_sel_e_o,
+
+    output logic [`DATA_WIDTH-1:0]  pc_e_o,
+    output logic [`DATA_WIDTH-1:0]  pc_plus_4_e_o,
+    output logic [`DATA_WIDTH-1:0]  rs1_data_e_o,
+    output logic [`DATA_WIDTH-1:0]  rs2_data_e_o,
+    output logic [`DATA_WIDTH-1:0]  imm_ext_e_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_e_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_e_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_e_o
+);
+
+    localparam CTL_NOP_REG_WRITE  = 1'b0;
+    localparam CTL_NOP_MEM_WRITE  = 1'b0;
+    localparam CTL_NOP_JUMP       = 1'b0;
+    localparam CTL_NOP_BRANCH     = 1'b0;
+    localparam CTL_NOP_ALU_SRC    = 1'b0;
+    localparam CTL_NOP_ALU_CTRL   = `ALU_OP_ADD;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            reg_write_e_o    <= CTL_NOP_REG_WRITE;
+            result_src_e_o   <= 2'b00;
+            mem_write_e_o    <= CTL_NOP_MEM_WRITE;
+            jump_e_o         <= CTL_NOP_JUMP;
+            branch_e_o       <= CTL_NOP_BRANCH;
+            alu_src_e_o      <= CTL_NOP_ALU_SRC;
+            alu_control_e_o  <= CTL_NOP_ALU_CTRL;
+            funct3_e_o       <= 3'b000;
+            op_a_sel_e_o     <= ALU_A_SRC_RS1;
+            pc_target_src_sel_e_o <= PC_TARGET_SRC_PC_PLUS_IMM;
+
+            pc_e_o           <= {`DATA_WIDTH{1'b0}};
+            pc_plus_4_e_o    <= {`DATA_WIDTH{1'b0}};
+            rs1_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            rs2_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            imm_ext_e_o      <= {`DATA_WIDTH{1'b0}};
+            rs1_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rs2_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rd_addr_e_o      <= {`REG_ADDR_WIDTH{1'b0}};
+        end else if (flush_e) begin
+            reg_write_e_o    <= CTL_NOP_REG_WRITE;
+            result_src_e_o   <= 2'b00;
+            mem_write_e_o    <= CTL_NOP_MEM_WRITE;
+            jump_e_o         <= CTL_NOP_JUMP;
+            branch_e_o       <= CTL_NOP_BRANCH;
+            alu_src_e_o      <= CTL_NOP_ALU_SRC;
+            alu_control_e_o  <= CTL_NOP_ALU_CTRL;
+            funct3_e_o       <= 3'b000;
+            op_a_sel_e_o     <= ALU_A_SRC_RS1;
+            pc_target_src_sel_e_o <= PC_TARGET_SRC_PC_PLUS_IMM;
+
+            // Data fields are also NOP'd or zeroed
+            pc_e_o           <= {`DATA_WIDTH{1'b0}};
+            pc_plus_4_e_o    <= {`DATA_WIDTH{1'b0}};
+            rs1_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            rs2_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            imm_ext_e_o      <= {`DATA_WIDTH{1'b0}};
+            rs1_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rs2_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rd_addr_e_o      <= {`REG_ADDR_WIDTH{1'b0}};
+        end else if (!stall_e) begin
+            reg_write_e_o    <= reg_write_d_i;
+            result_src_e_o   <= result_src_d_i;
+            mem_write_e_o    <= mem_write_d_i;
+            jump_e_o         <= jump_d_i;
+            branch_e_o       <= branch_d_i;
+            alu_src_e_o      <= alu_src_d_i;
+            alu_control_e_o  <= alu_control_d_i;
+            funct3_e_o       <= funct3_d_i;
+            op_a_sel_e_o     <= op_a_sel_d_i;
+            pc_target_src_sel_e_o <= pc_target_src_sel_d_i;
+
+            pc_e_o           <= pc_d_i;
+            pc_plus_4_e_o    <= pc_plus_4_d_i;
+            rs1_data_e_o     <= rs1_data_d_i;
+            rs2_data_e_o     <= rs2_data_d_i;
+            imm_ext_e_o      <= imm_ext_d_i;
+            rs1_addr_e_o     <= rs1_addr_d_i;
+            rs2_addr_e_o     <= rs2_addr_d_i;
+            rd_addr_e_o      <= rd_addr_d_i;
+        end
+        // If stalled (stall_e = 1) and not flushed, register holds its value
+    end
+endmodule
+
+
+--- File: rtl/core/pipeline_control.sv ---
+
+
+
+--- File: rtl/core/if_id_register.sv ---
+`include "common/defines.svh"
+
+module if_id_register (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Control signals from Hazard Unit
+    input  logic stall_d, // Stall: keeps current values
+    input  logic flush_d, // Flush: clears register (outputs NOP-like values)
+
+    // Data inputs from Fetch Stage
+    input  logic [`INSTR_WIDTH-1:0] instr_f_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_f_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_f_i,          // Current PC from Fetch
+
+    // Data outputs to Decode Stage
+    output logic [`INSTR_WIDTH-1:0] instr_id_o,
+    output logic [`DATA_WIDTH-1:0]  pc_plus_4_id_o,
+    output logic [`DATA_WIDTH-1:0]  pc_id_o           // Current PC to Decode
+);
+
+    // NOP instruction (addi x0, x0, 0) for RISC-V
+    localparam NOP_INSTRUCTION = `INSTR_WIDTH'h00000013;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            instr_id_o     <= NOP_INSTRUCTION;
+            pc_plus_4_id_o <= {`DATA_WIDTH{1'b0}};
+            pc_id_o        <= {`DATA_WIDTH{1'b0}};
+        end else if (flush_d) begin
+            instr_id_o     <= NOP_INSTRUCTION; // Flush with NOP
+            pc_plus_4_id_o <= {`DATA_WIDTH{1'b0}}; // Or a defined "safe" PC+4
+            pc_id_o        <= {`DATA_WIDTH{1'b0}}; // Or a defined "safe" PC
+        end else if (!stall_d) begin // If not stalled and not flushed, pass inputs
+            instr_id_o     <= instr_f_i;
+            pc_plus_4_id_o <= pc_plus_4_f_i;
+            pc_id_o        <= pc_f_i;
+        end
+        // If stalled (stall_d = 1) and not flushed, register holds its value
+    end
+
+endmodule
+
+
+--- File: rtl/core/data_memory.sv ---
+// rtl/core/data_memory.sv
+`include "common/defines.svh"
+`include "common/riscv_opcodes.svh" // For FUNCT3 defines (LB, LH, LW, etc.)
+
+module data_memory (
+    input  logic clk,
+    input  logic rst_n,
+
+    input  logic [`DATA_WIDTH-1:0]     addr_i,        // Address from ALU result
+    input  logic [`DATA_WIDTH-1:0]     write_data_i,  // Data from RS2 (for stores)
+    input  logic                       mem_write_en_i,  // From MemWriteM control signal
+    input  logic [2:0]                 funct3_i,      // To determine load/store type (size and sign)
+
+    output logic [`DATA_WIDTH-1:0]     read_data_o    // Data read from memory (for loads)
+);
+
+    // Parameter for memory size (e.g., 2^10 = 1024 words of 64-bit)
+    // Addresses are byte addresses.
+    localparam MEM_ADDR_BITS = 10; // For 1KB of byte-addressable memory (2^10 bytes)
+    localparam MEM_SIZE_BYTES = 1 << MEM_ADDR_BITS;
+    localparam MEM_SIZE_WORDS = MEM_SIZE_BYTES / (`DATA_WIDTH/8);
+
+    // Byte-addressable memory array. Each element is a byte.
+    logic [7:0] mem [MEM_SIZE_BYTES-1:0];
+
+    // For faster simulation, Verilator might prefer word-oriented memory if operations are word-aligned
+    // but byte-addressable is more general for LB/SB etc.
+
+    // Read logic (combinational read based on address)
+    // Handles different load types based on funct3
+    logic [`DATA_WIDTH-1:0] read_data_aligned;
+    always_comb begin
+        // Default to 'x' or 0 if address is out of bounds (not explicitly handled here for simplicity)
+        read_data_aligned = `DATA_WIDTH'('x);
+        if (addr_i < MEM_SIZE_BYTES) begin
+            // Read a full 64-bit word aligned to 8 bytes for simplicity first
+            // This assumes addr_i is mostly aligned for LW/LD. Unaligned access is complex.
+            // For byte/half access, we need to pick correct bytes from the word.
+            // Let's read the 8 bytes starting at the (potentially unaligned) address.
+            // This is a simplification; real unaligned access is more involved.
+            // We'll handle alignment and byte picking for loads.
+            // For simplicity, assume addr_i is aligned for word/double-word access.
+            // For byte/half, addr_i can be unaligned within the word.
+
+            // Construct the 64-bit value from individual bytes
+            // This handles potential unaligned reads across word boundaries if MEM_SIZE_BYTES is large enough
+            // and if addr_i + 7 does not exceed MEM_SIZE_BYTES-1.
+            // For simplicity, let's assume we read an aligned 64-bit word first, then extract.
+            logic [`DATA_WIDTH-1:0] fetched_word;
+            logic [2:0] byte_offset_in_word = addr_i[2:0]; // Lower 3 bits for byte offset within a 64-bit word
+
+            // Read the 8 bytes that form the 64-bit chunk containing addr_i
+            // This is still a simplification, proper unaligned access over physical memory is hard
+            for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
+                if ((addr_i + i) < MEM_SIZE_BYTES) begin
+                    fetched_word[i*8 +: 8] = mem[addr_i + i];
+                end else {
+                    fetched_word[i*8 +: 8] = 8'hXX; // Out of bounds byte
+                }
+            end
+            // The above loop is not quite right for constructing the word based on addr_i alignment
+            // Let's re-think: fetch the aligned word, then select based on offset and funct3.
+            logic [`DATA_WIDTH-1:0] aligned_word_read;
+            logic [`DATA_WIDTH-1:0] temp_read_data = `DATA_WIDTH'('x);
+            logic [MEM_ADDR_BITS-1:3] word_addr_idx = addr_i[`MEM_ADDR_BITS-1:3]; // Index for 64-bit words if mem was word array
+
+            // More correct byte-wise construction for an aligned read:
+            for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
+                 // addr_i & ~7 ensures we start at an 8-byte boundary for the read
+                if (( (addr_i & ~(`DATA_WIDTH/8 - 1)) + i) < MEM_SIZE_BYTES) begin
+                    aligned_word_read[(i*8) +: 8] = mem[(addr_i & ~(`DATA_WIDTH/8 - 1)) + i];
+                end else begin
+                    aligned_word_read[(i*8) +: 8] = 8'hXX;
+                end
+            end
+
+
+            case (funct3_i)
+                `FUNCT3_LB: begin // Load Byte (signed)
+                    temp_read_data = {{(`DATA_WIDTH-8){aligned_word_read[byte_offset_in_word*8 + 7]}}, aligned_word_read[byte_offset_in_word*8 +: 8]};
+                end
+                `FUNCT3_LH: begin // Load Half-word (signed)
+                    temp_read_data = {{(`DATA_WIDTH-16){aligned_word_read[byte_offset_in_word*8 + 15]}}, aligned_word_read[byte_offset_in_word*8 +: 16]};
+                end
+                `FUNCT3_LW: begin // Load Word (signed, 32-bit)
+                    temp_read_data = {{(`DATA_WIDTH-32){aligned_word_read[byte_offset_in_word*8 + 31]}}, aligned_word_read[byte_offset_in_word*8 +: 32]};
+                end
+                `FUNCT3_LD: begin // Load Double-word (64-bit)
+                    temp_read_data = aligned_word_read; // Assumes addr_i is 8-byte aligned for LD
+                end
+                `FUNCT3_LBU: begin // Load Byte (unsigned)
+                    temp_read_data = {{(`DATA_WIDTH-8){1'b0}}, aligned_word_read[byte_offset_in_word*8 +: 8]};
+                end
+                `FUNCT3_LHU: begin // Load Half-word (unsigned)
+                    temp_read_data = {{(`DATA_WIDTH-16){1'b0}}, aligned_word_read[byte_offset_in_word*8 +: 16]};
+                end
+                `FUNCT3_LWU: begin // Load Word (unsigned, 32-bit into 64-bit)
+                    temp_read_data = {{(`DATA_WIDTH-32){1'b0}}, aligned_word_read[byte_offset_in_word*8 +: 32]};
+                end
+                default: temp_read_data = `DATA_WIDTH'('x); // Should not happen for load opcodes
+            endcase
+            read_data_aligned = temp_read_data;
+        end
+    end
+    assign read_data_o = read_data_aligned;
+
+    // Write logic (synchronous write on positive clock edge)
+    always_ff @(posedge clk) begin
+        if (mem_write_en_i && addr_i < MEM_SIZE_BYTES) begin
+            case (funct3_i)
+                `FUNCT3_SB: begin // Store Byte
+                    if (addr_i < MEM_SIZE_BYTES) mem[addr_i] = write_data_i[7:0];
+                end
+                `FUNCT3_SH: begin // Store Half-word
+                    if ((addr_i + 1) < MEM_SIZE_BYTES) begin // Check bounds for 2 bytes
+                        mem[addr_i]   = write_data_i[7:0];
+                        mem[addr_i+1] = write_data_i[15:8];
+                    end
+                end
+                `FUNCT3_SW: begin // Store Word (32-bit)
+                    if ((addr_i + 3) < MEM_SIZE_BYTES) begin // Check bounds for 4 bytes
+                        for (int i = 0; i < 4; i++) begin
+                            mem[addr_i+i] = write_data_i[i*8 +: 8];
+                        end
+                    end
+                end
+                `FUNCT3_SD: begin // Store Double-word (64-bit)
+                    if ((addr_i + 7) < MEM_SIZE_BYTES) begin // Check bounds for 8 bytes
+                        for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
+                            mem[addr_i+i] = write_data_i[i*8 +: 8];
+                        end
+                    end
+                end
+                default: ; // No action for other funct3 values during store
+            endcase
+        end
+    end
+
+    // Optional: Initialize memory on reset (for simulation)
+    initial begin
+        if (rst_n) begin // Wait for reset to de-assert if this initial block runs at time 0
+            for (int i = 0; i < MEM_SIZE_BYTES; i++) begin
+                mem[i] = 8'h00;
+            end
+        end
+    end
+    // Better reset handling:
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int i = 0; i < MEM_SIZE_BYTES; i++) begin
+                mem[i] <= 8'h00;
+            end
+        end
+    end
+
+endmodule
+
+
+--- File: rtl/core/execute.sv ---
+// rtl/core/execute.sv
+`include "common/defines.svh"
+`include "common/alu_defines.svh"
+`include "common/riscv_opcodes.svh"
+`include "common/control_signals_defines.svh"
+
+module execute (
+    // Inputs from ID/EX Register
+    input  logic       reg_write_e_i,
+    input  logic [1:0] result_src_e_i,
+    input  logic       mem_write_e_i,
+    input  logic       jump_e_i,
+    input  logic       branch_e_i,
+    input  logic       alu_src_e_i,
+    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control_e_i,
+    input  logic [2:0] funct3_e_i,
+    input  alu_a_src_sel_e op_a_sel_e_i,
+    input  pc_target_src_sel_e pc_target_src_sel_e_i,
+
+    input  logic [`DATA_WIDTH-1:0]  pc_e_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_e_i,
+    input  logic [`DATA_WIDTH-1:0]  rs1_data_e_i,   // Data from RF or earlier forward for Rs1
+    input  logic [`DATA_WIDTH-1:0]  rs2_data_e_i,   // Data from RF or earlier forward for Rs2
+    input  logic [`DATA_WIDTH-1:0]  imm_ext_e_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_e_i,
+
+// change start
+    // Inputs for Forwarding (from later stages, routed by top pipeline module)
+    input  logic [`DATA_WIDTH-1:0]     forward_data_mem_i, // Data from EX/MEM output (ALUResultM or ReadDataM if load was in MEM)
+                                                         // More accurately, this should be ALUResultM if ResultSrcM is ALU,
+                                                         // or ReadDataM if ResultSrcM is Mem.
+                                                         // For simplicity in forwarding to ALU, usually ALUResultM is forwarded if RegWriteM is true.
+                                                         // If load completes in MEM, ReadDataM is what should be forwarded.
+                                                         // Let's assume this is the value that would be written to RdM if RegWriteM is true.
+                                                         // This could be ALUResultM or ReadDataW (after Mem read).
+                                                         // To be precise: if forwarding from MEM stage for an ALU op: ALUResultM.
+                                                         // If forwarding from MEM stage for a Load op: ReadDataM (from MEM/WB input).
+                                                         // The P&H diagram often simplifies this to "ALUResultM" path, but it can be ReadDataM.
+                                                         // Let's use a generic "data_from_mem_stage_output" for now.
+    input  logic [`DATA_WIDTH-1:0]     forward_data_wb_i,  // Data from MEM/WB output (ResultW)
+
+    // Forwarding control signals from Pipeline Control Unit
+    input  logic [1:0]                 forward_a_e_i,
+    input  logic [1:0]                 forward_b_e_i,
+// change end
+
+    // Outputs to EX/MEM Register
+    output logic       reg_write_m_o,
+    // ... (остальные выходы как были) ...
+    output logic [2:0] funct3_m_o,
+
+    // Outputs to Fetch Stage/PC update logic
+    output logic       pc_src_e_o,
+    output logic [`DATA_WIDTH-1:0] pc_target_addr_e_o
+);
+
+    logic [`DATA_WIDTH-1:0] alu_operand_a_mux_out; // Output of MUX for OpA source (PC, RS1, ZERO)
+    logic [`DATA_WIDTH-1:0] alu_operand_a;         // Final Operand A after forwarding
+    logic [`DATA_WIDTH-1:0] alu_operand_b_mux_out; // Output of MUX for OpB source (RS2, Imm)
+    logic [`DATA_WIDTH-1:0] alu_operand_b;         // Final Operand B after forwarding
+
+    logic [`DATA_WIDTH-1:0] alu_result_internal;
+    logic                   alu_zero_flag_internal;
+
+    // ALU Operand A Source MUX (before forwarding)
+    always_comb begin
+        case (op_a_sel_e_i)
+            ALU_A_SRC_RS1:  alu_operand_a_mux_out = rs1_data_e_i;
+            ALU_A_SRC_PC:   alu_operand_a_mux_out = pc_e_i;
+            ALU_A_SRC_ZERO: alu_operand_a_mux_out = `DATA_WIDTH'(0);
+            default:        alu_operand_a_mux_out = rs1_data_e_i;
+        endcase
+    end
+
+    // ALU Operand A Forwarding MUX
+// change start
+    always_comb begin
+        case (forward_a_e_i)
+            2'b00:  alu_operand_a = alu_operand_a_mux_out;      // No forward, use data from ID/EX (or selected PC/Zero)
+            2'b10:  alu_operand_a = forward_data_mem_i;       // Forward from MEM stage output (EX/MEM.ALUResult or EX/MEM.ReadData if load)
+            2'b01:  alu_operand_a = forward_data_wb_i;        // Forward from WB stage output (MEM/WB.ResultW)
+            default: alu_operand_a = alu_operand_a_mux_out;   // Should not happen
+        endcase
+    end
+// change end
+
+    // ALU Operand B Source MUX (before forwarding)
+    assign alu_operand_b_mux_out = alu_src_e_i ? imm_ext_e_i : rs2_data_e_i;
+
+    // ALU Operand B Forwarding MUX
+// change start
+    always_comb begin
+        case (forward_b_e_i)
+            2'b00:  alu_operand_b = alu_operand_b_mux_out;      // No forward, use data from ID/EX (RS2 or Imm)
+            2'b10:  alu_operand_b = forward_data_mem_i;       // Forward from MEM stage output
+            2'b01:  alu_operand_b = forward_data_wb_i;        // Forward from WB stage output
+            default: alu_operand_b = alu_operand_b_mux_out;   // Should not happen
+        endcase
+        // If alu_src_e_i is 1 (immediate for OpB), forwarding is not applicable to imm_ext_e_i.
+        // Forwarding only applies if OpB comes from a register (rs2_data_e_i).
+        // The Hazard Unit should set ForwardBE=00 if alu_src_e_i is 1.
+        // Or, this MUX logic can be conditional on alu_src_e_i.
+        if (alu_src_e_i) begin // If Operand B is immediate, no forwarding for it.
+            alu_operand_b = imm_ext_e_i;
+        end
+        // else alu_operand_b is determined by the case statement above.
+    end
+// change end
+
+    // ALU Instance (uses final operands after forwarding)
+    alu u_alu (
+        .operand_a   (alu_operand_a),
+        .operand_b   (alu_operand_b),
+        .alu_control (alu_control_e_i),
+        .result      (alu_result_internal),
+        .zero_flag   (alu_zero_flag_internal)
+    );
+
+    // ... (PC Target Address MUX, Branch Condition Logic, PCSrcE generation - остаются как были) ...
+    // ... (Pass-through signals for EX/MEM register - остаются как были) ...
+
+    // Pass-through signals for EX/MEM register
+    assign reg_write_m_o  = reg_write_e_i;
+    assign result_src_m_o = result_src_e_i;
+    assign mem_write_m_o  = mem_write_e_i;
+    assign alu_result_m_o = alu_result_internal;
+    assign rs2_data_m_o   = rs2_data_e_i; // Note: This is original rs2_data from ID/EX, NOT forwarded rs2_data.
+                                          // This is correct as it's the data to be STORED in memory.
+    assign rd_addr_m_o    = rd_addr_e_i;
+    assign pc_plus_4_m_o  = pc_plus_4_e_i;
+    assign funct3_m_o     = funct3_e_i;
+
+    // PC Target Address MUX
+    logic [`DATA_WIDTH-1:0] target_addr_pc_plus_imm;
+    logic [`DATA_WIDTH-1:0] target_addr_alu_jalr;
+
+    assign target_addr_pc_plus_imm = pc_e_i + imm_ext_e_i;
+    assign target_addr_alu_jalr    = alu_result_internal & ~(`DATA_WIDTH'(1));
+
+    assign pc_target_addr_e_o = (pc_target_src_sel_e_i == PC_TARGET_SRC_ALU_JALR) ?
+                                target_addr_alu_jalr : target_addr_pc_plus_imm;
+
+    // Branch Condition Logic
+    logic take_branch;
+    always_comb begin
+        take_branch = 1'b0;
+        if (branch_e_i) begin
+            case (funct3_e_i)
+                `FUNCT3_BEQ:  take_branch = alu_zero_flag_internal;
+                `FUNCT3_BNE:  take_branch = ~alu_zero_flag_internal;
+                `FUNCT3_BLT:  take_branch = alu_result_internal[0];
+                `FUNCT3_BGE:  take_branch = ~alu_result_internal[0];
+                `FUNCT3_BLTU: take_branch = alu_result_internal[0];
+                `FUNCT3_BGEU: take_branch = ~alu_result_internal[0];
+                default:      take_branch = 1'b0;
+            endcase
+        end
+    end
+
+    assign pc_src_e_o = (jump_e_i) || (branch_e_i && take_branch);
+
+endmodule
+
+
+--- File: rtl/core/decode.sv ---
+// rtl/core/decode.sv
+`include "common/defines.svh"
+`include "common/immediate_types.svh"
+`include "common/alu_defines.svh" // For ALU_CONTROL_WIDTH
+`include "common/control_signals_defines.svh"
+
+module decode (
+    // Inputs from IF/ID Register
+    input  logic [`INSTR_WIDTH-1:0] instr_id_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_id_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_id_i,
+
+    // Inputs from Writeback Stage (for register file write)
+    input  logic                       rd_write_en_wb_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,
+    input  logic [`DATA_WIDTH-1:0]     rd_data_wb_i,
+
+    // Clock and Reset
+    input  logic clk,
+    input  logic rst_n,
+
+    // Outputs to ID/EX Register
+    // Control Signals
+    output logic       reg_write_d_o,
+    output logic [1:0] result_src_d_o,
+    output logic       mem_write_d_o,
+    output logic       jump_d_o,
+    output logic       branch_d_o,
+    output logic       alu_src_d_o,
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // Unified ALU control
+    output logic [2:0] funct3_d_o,
+    output alu_a_src_sel_e op_a_sel_d_o,
+    output pc_target_src_sel_e pc_target_src_sel_d_o,
+
+    // Data
+    output logic [`DATA_WIDTH-1:0]  pc_d_o,
+    output logic [`DATA_WIDTH-1:0]  pc_plus_4_d_o,
+    output logic [`DATA_WIDTH-1:0]  rs1_data_d_o,
+    output logic [`DATA_WIDTH-1:0]  rs2_data_d_o,
+    output logic [`DATA_WIDTH-1:0]  imm_ext_d_o,
+
+    // Register addresses (for hazard unit)
+    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_d_o
+);
+
+    // Instruction fields
+    logic [6:0] opcode;
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_instr;
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_instr;
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_instr;
+    logic [2:0] funct3;
+    logic       funct7_5;
+
+    // Intermediate signals
+    immediate_type_e imm_type_sel_internal;
+
+    // Decompose instruction
+    assign opcode         = instr_id_i[6:0];
+    assign rd_addr_instr  = instr_id_i[11:7];
+    assign funct3         = instr_id_i[14:12];
+    assign rs1_addr_instr = instr_id_i[19:15];
+    assign rs2_addr_instr = instr_id_i[24:20];
+    assign funct7_5       = instr_id_i[30]; // Bit 5 of funct7
+
+    // Control Unit instance
+    control_unit u_control_unit (
+        .op                (opcode),
+        .funct3            (funct3),
+        .funct7_5          (funct7_5),
+
+        .reg_write_d_o     (reg_write_d_o),
+        .result_src_d_o    (result_src_d_o),
+        .mem_write_d_o     (mem_write_d_o),
+        .jump_d_o          (jump_d_o),
+        .branch_d_o        (branch_d_o),
+        .alu_src_d_o       (alu_src_d_o),
+        .alu_control_d_o   (alu_control_d_o), // Now unified
+        .imm_type_d_o      (imm_type_sel_internal),
+        .funct3_d_o        (funct3_d_o), // Connect to new output from CU
+        .op_a_sel_d_o      (op_a_sel_d_o),
+        .pc_target_src_sel_d_o (pc_target_src_sel_d_o)
+    );
+
+    // Register File instance
+    register_file u_register_file (
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .rs1_addr_i        (rs1_addr_instr),
+        .rs1_data_o        (rs1_data_d_o),
+        .rs2_addr_i        (rs2_addr_instr),
+        .rs2_data_o        (rs2_data_d_o),
+        .rd_write_en_wb_i  (rd_write_en_wb_i),
+        .rd_addr_wb_i      (rd_addr_wb_i),
+        .rd_data_wb_i      (rd_data_wb_i)
+    );
+
+    // Immediate Generator instance
+    immediate_generator u_immediate_generator (
+        .instr_i           (instr_id_i),
+        .imm_type_sel_i    (imm_type_sel_internal),
+        .imm_ext_o         (imm_ext_d_o)
+    );
+
+    // Pass through PC values
+    assign pc_d_o        = pc_id_i;
+    assign pc_plus_4_d_o = pc_plus_4_id_i;
+
+    // Pass through register addresses for hazard detection and forwarding
+    assign rs1_addr_d_o  = rs1_addr_instr;
+    assign rs2_addr_d_o  = rs2_addr_instr;
+    assign rd_addr_d_o   = rd_addr_instr;
+
+endmodule
+
+
+--- File: rtl/core/immediate_generator.sv ---
+// rtl/core/immediate_generator.sv
+`include "common/defines.svh"
+`include "common/immediate_types.svh"
+
+module immediate_generator (
+    input  logic [`INSTR_WIDTH-1:0] instr_i,
+    input  immediate_type_e         imm_type_sel_i, // Selects the type of immediate to generate
+    output logic [`DATA_WIDTH-1:0]  imm_ext_o      // Sign-extended immediate value
+);
+
+    logic [`DATA_WIDTH-1:0] imm_i_type;
+    logic [`DATA_WIDTH-1:0] imm_s_type;
+    logic [`DATA_WIDTH-1:0] imm_b_type;
+    logic [`DATA_WIDTH-1:0] imm_u_type;
+    logic [`DATA_WIDTH-1:0] imm_j_type;
+    logic [`DATA_WIDTH-1:0] imm_ishift_type;
+
+    // I-type immediate: instr[31:20] (12 bits)
+    assign imm_i_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:20]};
+
+    // S-type immediate: instr[31:25], instr[11:7] (12 bits)
+    assign imm_s_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:25], instr_i[11:7]};
+
+    // B-type immediate: {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0} (13 bits)
+    // Sign-extended from original bit 12 (instr[31]) of the conceptual 13-bit immediate.
+    assign imm_b_type = {{(`DATA_WIDTH-13){instr_i[31]}}, instr_i[31], instr_i[7], instr_i[30:25], instr_i[11:8], 1'b0};
+
+    // U-type immediate: {instr[31:12], 12'b0} (32 bits)
+    // Sign-extended from bit 31 of the effective 32-bit immediate. For RV64, this means sign-extend from bit 31 of the value.
+    assign imm_u_type = {{(`DATA_WIDTH-32){instr_i[31]}}, instr_i[31:12], 12'h000};
+
+    // J-type immediate: {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0} (21 bits)
+    // Sign-extended from original bit 20 (instr[31]) of the conceptual 21-bit immediate.
+    assign imm_j_type = {{(`DATA_WIDTH-21){instr_i[31]}}, instr_i[31], instr_i[19:12], instr_i[20], instr_i[30:21], 1'b0};
+    assign imm_ishift_type = `DATA_WIDTH'(instr_i[25:20]);
+
+    always_comb begin
+        case (imm_type_sel_i)
+            IMM_TYPE_I:    imm_ext_o = imm_i_type;
+            IMM_TYPE_S:    imm_ext_o = imm_s_type;
+            IMM_TYPE_B:    imm_ext_o = imm_b_type;
+            IMM_TYPE_U:    imm_ext_o = imm_u_type;
+            IMM_TYPE_J:    imm_ext_o = imm_j_type;
+            IMM_TYPE_ISHIFT: imm_ext_o = imm_ishift_type;
+            IMM_TYPE_NONE: imm_ext_o = `DATA_WIDTH'(0); // Or 'x if preferred for non-existent immediates
+            default:       imm_ext_o = `DATA_WIDTH'('x); // Should not happen with valid enum
+        endcase
+    end
+
+endmodule
+
+
+--- File: rtl/core/writeback.sv ---
+// rtl/core/writeback.sv
+`include "common/defines.svh"
+
+module writeback_stage ( // Renamed to writeback_stage for clarity
+    // Inputs from MEM/WB Register
+    input  logic [1:0] result_src_wb_i,   // Selects the source for writeback data
+
+    input  logic [`DATA_WIDTH-1:0]     read_data_wb_i,  // Data read from memory
+    input  logic [`DATA_WIDTH-1:0]     alu_result_wb_i, // Result from ALU
+    input  logic [`DATA_WIDTH-1:0]     pc_plus_4_wb_i,  // PC+4 for JAL/JALR
+
+    // Outputs that go to the Register File's write port
+    // (These will be connected to register_file instance in the top pipeline module)
+    output logic [`DATA_WIDTH-1:0]     result_w_o       // Data to be written to register file
+);
+
+    // MUX to select the data to be written back to the register file
+    always_comb begin
+        case (result_src_wb_i)
+            2'b00:  result_w_o = alu_result_wb_i;    // Result from ALU
+            2'b01:  result_w_o = read_data_wb_i;     // Data from memory
+            2'b10:  result_w_o = pc_plus_4_wb_i;     // PC+4 for JAL/JALR
+            default: result_w_o = `DATA_WIDTH'('x); // Should not happen with valid control
+        endcase
+    end
+
+    // The following signals are also part of the Writeback "stage" conceptually,
+    // but they are passed directly from MEM/WB to the register file in the top module:
+    // - reg_write_wb_i (from MEM/WB) -> to register_file.rd_write_en_wb_i
+    // - rd_addr_wb_i   (from MEM/WB) -> to register_file.rd_addr_wb_i
+
+endmodule
+
+
+--- File: rtl/core/register_file.sv ---
+// rtl/core/pipeline_control.sv
+`include "common/defines.svh"
+// `include "common/control_signals_defines.svh" // Если нужны enum для Forward MUX
+
+module pipeline_control (
+    // Inputs from IF/ID Stage (register addresses read in Decode)
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_i, // Rs1D on diagram
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_i, // Rs2D on diagram
+
+    // Inputs from ID/EX Stage (destination register and control signals from Execute)
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_e_i,    // RdE
+    input  logic                       reg_write_e_i,  // RegWriteE
+    input  logic [1:0]                 result_src_e_i, // ResultSrcE (bit 0 indicates load if =1 for ResultSrc=MemRead)
+
+    // Inputs from EX/MEM Stage
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_m_i,    // RdM
+    input  logic                       reg_write_m_i,  // RegWriteM
+
+    // Inputs from MEM/WB Stage (for forwarding, as per diagram)
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_w_i,    // RdW
+    input  logic                       reg_write_w_i,  // RegWriteW
+
+    // Input from Execute Stage indicating branch taken or jump
+    input  logic                       pc_src_e_i,     // PCSrcE
+
+    // Outputs to control the pipeline
+    output logic                       stall_f_o,      // Stall PC and IF/ID input
+    output logic                       stall_d_o,      // Stall IF/ID register (keep current values)
+    output logic                       flush_d_o,      // Clear IF/ID register
+    output logic                       flush_e_o,      // Clear ID/EX register
+
+    output logic [1:0]                 forward_a_e_o,  // Forwarding MUX select for ALU OpA
+                                                     // 00: No forward (from ID/EX rs1_data)
+                                                     // 01: Forward from EX/MEM (ALUResultM or PCPlus4M if JAL/JALR was in EX)
+                                                     // 10: Forward from MEM/WB (ResultW)
+    output logic [1:0]                 forward_b_e_o   // Forwarding MUX select for ALU OpB
+);
+
+    // Internal signals for hazards
+    logic load_use_hazard;
+
+    // ** 1. Load-Use Hazard Detection & Stall Generation **
+    // Stall if instruction in Decode uses a register that an instruction in Execute
+    // is loading from memory.
+    // ResultSrcE[0] is 1 if ResultSrcE is MEM_READ (01) or PC_PLUS_4 (10).
+    // We are interested in MEM_READ (01). So ResultSrcE == 2'b01.
+    // Let's assume ResultSrcE[0] = 1 implies a memory read for simplicity as per some diagrams,
+    // OR more accurately, if (ResultSrcE == 2'b01) which means data from memory.
+    // The diagram uses ResultSrcE0 (bit 0 of ResultSrcE).
+    // If ResultSrcE = 01 (MemRead), then ResultSrcE[0] = 1.
+    // If ResultSrcE = 10 (PC+4), then ResultSrcE[0] = 0. This is not a load.
+    // So we need to be more specific: result_src_e_i == 2'b01 indicates a load.
+    logic is_load_in_ex;
+    assign is_load_in_ex = (result_src_e_i == 2'b01); // Data from memory for writeback
+
+    assign load_use_hazard = is_load_in_ex && reg_write_e_i && (rd_addr_e_i != 0) &&
+                             ((rd_addr_e_i == rs1_addr_d_i) || (rd_addr_e_i == rs2_addr_d_i));
+
+    assign stall_f_o = load_use_hazard;
+    assign stall_d_o = load_use_hazard; // Stall IF/ID, which means ID stage also stalls.
+
+    // ** 2. Flush Generation **
+    // FlushD: Clear IF/ID register if branch taken in EX or if load-use stall bubbles EX.
+    // FlushE: Clear ID/EX register if branch taken in EX or if load-use stall.
+    // The diagram says: FlushD = PCSrcE
+    //                 FlushE = lwStall | PCSrcE
+    assign flush_d_o = pc_src_e_i;
+    assign flush_e_o = load_use_hazard || pc_src_e_i;
+
+
+    // ** 3. Forwarding Logic **
+    // ForwardAE / ForwardBE
+    // Priority:
+    // 1. EX/MEM hazard (if RegWriteE and RdE matches Rs1D/Rs2D)
+    // 2. MEM/WB hazard (if RegWriteM and RdM matches Rs1D/Rs2D, and not covered by EX/MEM forward)
+    // 3. (Diagram also shows WB/?? hazard if RegWriteW and RdW matches)
+
+    // Forward for Operand A (rs1_addr_d_i)
+    always_comb begin
+        forward_a_e_o = 2'b00; // Default: no forwarding
+        // EX/MEM to EX forwarding for OpA
+        if (reg_write_e_i && (rd_addr_e_i != 0) && (rd_addr_e_i == rs1_addr_d_i)) begin
+            forward_a_e_o = 2'b01; // Forward ALUResultM (or PC+4 if it was JAL/JALR)
+        end
+        // MEM/WB to EX forwarding for OpA (if not already forwarded from EX/MEM)
+        // And if rs1 is not x0
+        else if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs1_addr_d_i)) begin
+            forward_a_e_o = 2'b10; // Forward ResultW (from MEM/WB, could be ALURes or MemData)
+        end
+        // MEM/WB stage is one cycle later than EX/MEM stage
+        // The diagram P&H 7.61 shows forward from RdW as well, let's add that for completeness of the diagram.
+        // This would be for data available at the very end of MEM/WB, to be used by an instruction now in EX.
+        // This means data from an instruction that is TWO cycles ahead of the current EX instruction.
+        // This is typically handled by the MEM/WB forwarding (my case 2'b10).
+        // The diagram's logic:
+        // if ((Rs1E == RdM) & RegWriteM) & (Rs1E != 0)) then ForwardAE = 10
+        // else if ((Rs1E == RdW) & RegWriteW) & (Rs1E != 0)) then ForwardAE = 01
+        // This implies RdM path has priority over RdW. My logic above does this.
+        // The diagram uses 10 for RdM and 01 for RdW for ForwardAE. Let's match that.
+        // My `reg_write_e_i` / `rd_addr_e_i` are from ID/EX register, feeding into current EX stage.
+        // My `reg_write_m_i` / `rd_addr_m_i` are from EX/MEM register, feeding into current MEM stage.
+        // My `reg_write_w_i` / `rd_addr_w_i` are from MEM/WB register, feeding into current WB stage.
+
+        // Correcting based on typical P&H diagram forwarding paths:
+        // Path 1: ALU result from instruction in EX stage (now in MEM stage) to current EX stage
+        // Path 2: Data from instruction in MEM stage (now in WB stage) to current EX stage
+
+        // Source for ForwardAE = 01 is ALUResultM or ReadDataM from instruction in MEM stage
+        // Source for ForwardAE = 10 is ResultW from instruction in WB stage
+
+        // Re-evaluating my signal names vs diagram:
+        // My rs1_addr_d_i is Rs1D (or Rs1E on diagram if referring to inputs of EX's ALU).
+        // Let's use Rs1D, Rs2D for inputs to Hazard Unit from Decode outputs.
+        // RdE, RegWriteE are from ID/EX register (instr currently in EX).
+        // RdM, RegWriteM are from EX/MEM register (instr currently in MEM).
+        // RdW, RegWriteW are from MEM/WB register (instr currently in WB).
+
+        // Forwarding to current EX stage for operand Rs1D:
+        // Priority 1: Data from instruction finishing EX stage (now in EX/MEM reg)
+        // This is not directly shown as a separate forward path on the diagram for Rs1D/Rs2D,
+        // because the EX stage calculation itself isn't finished to be forwarded back to its own input.
+        // Forwarding is from *later* stages to an *earlier* stage's inputs.
+        // So, for an instruction currently in EX, we need data from instructions in MEM or WB.
+
+        // Forward from MEM stage to EX stage (for Rs1D)
+        // If instr in MEM writes to RdM, and RdM == Rs1D
+        if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs1_addr_d_i)) begin
+            forward_a_e_o = 2'b01; // Use value from end of MEM stage (ALUResultM or ReadDataM via MEM/WB reg)
+                                   // Diagram shows this as ForwardAE=10 (RdM path)
+        end
+        // Forward from WB stage to EX stage (for Rs1D), if not covered by MEM stage forward
+        else if (reg_write_w_i && (rd_addr_w_i != 0) && (rd_addr_w_i == rs1_addr_d_i)) begin
+            forward_a_e_o = 2'b10; // Use value from end of WB stage (ResultW)
+                                   // Diagram shows this as ForwardAE=01 (RdW path)
+        end
+        // Note: The encoding 01 vs 10 for MEM vs WB might be arbitrary, what matters is distinct values.
+        // I will use 01 for MEM->EX and 10 for WB->EX to make it different from the diagram if my interpretation is different.
+        // Let's stick to diagram: ForwardAE = 10 for (EX/MEM data -> EX input), ForwardAE = 01 for (MEM/WB data -> EX input)
+        // My 'reg_write_m_i' is from instruction currently IN memory stage (output of EX/MEM). So this is the EX/MEM -> EX path.
+        // My 'reg_write_w_i' is from instruction currently IN WB stage (output of MEM/WB). So this is the MEM/WB -> EX path.
+
+        // Re-assigning based on diagram's numbering for ForwardAE:
+        // RdM path (data from EX/MEM register, for instruction in MEM stage) has code 10
+        // RdW path (data from MEM/WB register, for instruction in WB stage) has code 01
+        forward_a_e_o = 2'b00; // Default
+        if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs1_addr_d_i)) begin
+            forward_a_e_o = 2'b10; // Forward from MEM stage output (EX/MEM pipeline reg content)
+        end
+        else if (reg_write_w_i && (rd_addr_w_i != 0) && (rd_addr_w_i == rs1_addr_d_i)) begin
+            forward_a_e_o = 2'b01; // Forward from WB stage output (MEM/WB pipeline reg content)
+        end
+    end
+
+    // Forward for Operand B (rs2_addr_d_i)
+    always_comb begin
+        forward_b_e_o = 2'b00; // Default: no forwarding
+        // Forward from MEM stage to EX stage (for Rs2D)
+        if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs2_addr_d_i)) begin
+            forward_b_e_o = 2'b10; // Forward from MEM stage output
+        end
+        // Forward from WB stage to EX stage (for Rs2D), if not covered by MEM stage forward
+        else if (reg_write_w_i && (rd_addr_w_i != 0) && (rd_addr_w_i == rs2_addr_d_i)) begin
+            forward_b_e_o = 2'b01; // Forward from WB stage output
+        end
+    end
+
+    // The diagram also shows ForwardAE/BE signals from EX stage (RdE).
+    // This would be for an instruction in EX forwarding its result to a *subsequent* cycle's EX stage,
+    // which is effectively what the reg_write_m_i/rd_addr_m_i path handles (as this instruction moves to MEM).
+    // The diagram text "if ((Rs1E == RdM) & RegWriteM)..." means Rs1 of *current EX* vs Rd of *instr in MEM*.
+    // The diagram text "if ((Rs1E == RdW) & RegWriteW)..." means Rs1 of *current EX* vs Rd of *instr in WB*.
+    // There is no explicit "Rs1E == RdE" forwarding in the text snippet on the diagram for ForwardAE/BE.
+    // However, if an ALU op in EX immediately needs its own result (not possible in simple pipeline)
+    // or if there's a very tight loop not handled by these, more forwarding might be needed.
+    // The standard P&H 5-stage forwarding covers EX/MEM->EX and MEM/WB->EX.
+
+endmodule
+
+
+--- File: rtl/core/instruction_memory.sv ---
+`include "common/defines.svh"
+
+module instruction_memory (
+    input  logic [`DATA_WIDTH-1:0] address,
+    output logic [`INSTR_WIDTH-1:0] instruction
+);
+
+    localparam ROM_SIZE = 256; // Number of instructions
+    logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
+
+    // In a real scenario, this would be loaded from a file (e.g., $readmemh)
+    initial begin
+        for (int i = 0; i < ROM_SIZE; i++) begin
+            mem[i] = 32'h00000013; // NOP
+        end
+        // Add a few distinct instructions for testing later
+        mem[0] = 32'h00100093; // addi x1, x0, 1
+        mem[1] = 32'h00200113; // addi x2, x0, 2
+        // mem[2] = 32'h00008067; // jalr x0, x1, 0 (effectively a jump to x1 content)
+        //                        // This is a simplification; jalr needs rs1.
+        //                        // Let's use simpler instructions for now.
+        mem[2] = 32'h00308193; // addi x3, x1, 3
+        mem[3] = 32'h00110213; // addi x4, x2, 1
+    end
+
+    assign instruction = mem[address[`DATA_WIDTH-1:2]]; // Use PC[63:2] as index for 32-bit instructions
+
+endmodule
+
+
+--- File: rtl/pipeline.sv ---
+// rtl/pipeline.sv
+`default_nettype none
+`timescale 1ns/1ps
+
+`include "common/defines.svh"
+`include "common/alu_defines.svh"
+`include "common/control_signals_defines.svh"
+// `include "common/immediate_types.svh" // Not directly needed at top level, submodules use it
+// `include "common/riscv_opcodes.svh"  // Not directly needed at top level
+
+module pipeline (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Outputs for observing/testing (optional)
+    output logic [`DATA_WIDTH-1:0] current_pc_debug, // Current PC from Fetch stage
+    output logic [`INSTR_WIDTH-1:0] fetched_instr_debug // Instruction fetched
+);
+
+    // Signals between Fetch and IF/ID Register
+    logic [`INSTR_WIDTH-1:0]    instr_f;
+    logic [`DATA_WIDTH-1:0]     pc_f;
+    logic [`DATA_WIDTH-1:0]     pc_plus_4_f;
+
+    // Signals between IF/ID Register and Decode Stage
+    logic [`INSTR_WIDTH-1:0]    instr_id;
+    logic [`DATA_WIDTH-1:0]     pc_id;
+    logic [`DATA_WIDTH-1:0]     pc_plus_4_id;
+
+    // Signals between Decode Stage and ID/EX Register
+    logic       reg_write_d;
+    logic [1:0] result_src_d;
+    logic       mem_write_d;
+    logic       jump_d;
+    logic       branch_d;
+    logic       alu_src_d;
+    logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d;
+    logic [2:0] funct3_d;
+    alu_a_src_sel_e op_a_sel_d;
+    pc_target_src_sel_e pc_target_src_sel_d;
+    logic [`DATA_WIDTH-1:0]  rs1_data_d;
+    logic [`DATA_WIDTH-1:0]  rs2_data_d;
+    logic [`DATA_WIDTH-1:0]  imm_ext_d;
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d; // To Hazard Unit
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d; // To Hazard Unit
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_d;  // To ID/EX
+
+    // Signals between ID/EX Register and Execute Stage
+    logic       reg_write_e;
+    logic [1:0] result_src_e;
+    logic       mem_write_e;
+    logic       jump_e;
+    logic       branch_e;
+    logic       alu_src_e;
+    logic [`ALU_CONTROL_WIDTH-1:0] alu_control_e;
+    logic [2:0] funct3_e;
+    alu_a_src_sel_e op_a_sel_e;
+    pc_target_src_sel_e pc_target_src_sel_e;
+    logic [`DATA_WIDTH-1:0]  pc_e;
+    logic [`DATA_WIDTH-1:0]  pc_plus_4_e;
+    logic [`DATA_WIDTH-1:0]  rs1_data_e;
+    logic [`DATA_WIDTH-1:0]  rs2_data_e;
+    logic [`DATA_WIDTH-1:0]  imm_ext_e;
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_e; // From ID/EX for Hazard Unit
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_e; // From ID/EX for Hazard Unit
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_e;  // To Hazard Unit & EX/MEM
+
+    // Signals from Execute Stage (to Hazard Unit & EX/MEM Register)
+    logic       pc_src_from_ex;          // Output from Execute, PCSrcE on diagram
+    logic [`DATA_WIDTH-1:0] pc_target_addr_from_ex; // Output from Execute, PCTargetE on diagram
+
+    // Signals between Execute Stage and EX/MEM Register
+    logic       reg_write_m_ex_out;      // RegWriteM from Execute
+    logic [1:0] result_src_m_ex_out;   // ResultSrcM from Execute
+    logic       mem_write_m_ex_out;      // MemWriteM from Execute
+    logic [`DATA_WIDTH-1:0] alu_result_m_ex_out; // ALUResultM from Execute
+    logic [`DATA_WIDTH-1:0] rs2_data_m_ex_out;   // WriteDataM from Execute (original rs2 data)
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_m_ex_out;    // RdM from Execute
+    logic [`DATA_WIDTH-1:0] pc_plus_4_m_ex_out;  // PCPlus4M from Execute
+    logic [2:0] funct3_m_ex_out;         // Funct3 from Execute
+
+    // Signals between EX/MEM Register and Memory Stage
+    logic       reg_write_m;
+    logic [1:0] result_src_m;
+    logic       mem_write_m;
+    logic [`DATA_WIDTH-1:0] alu_result_m;
+    logic [`DATA_WIDTH-1:0] rs2_data_m;
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_m;  // To Hazard Unit & MEM/WB
+    logic [`DATA_WIDTH-1:0] pc_plus_4_m;
+    logic [2:0] funct3_m;
+
+    // Signals between Memory Stage and MEM/WB Register
+    logic       reg_write_w_mem_out;
+    logic [1:0] result_src_w_mem_out;
+    logic [`DATA_WIDTH-1:0] read_data_w_mem_out;
+    logic [`DATA_WIDTH-1:0] alu_result_w_mem_out;
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_w_mem_out;
+    logic [`DATA_WIDTH-1:0] pc_plus_4_w_mem_out;
+
+    // Signals between MEM/WB Register and Writeback Stage
+    logic       reg_write_wb;
+    logic [1:0] result_src_wb;
+    logic [`DATA_WIDTH-1:0] read_data_wb;
+    logic [`DATA_WIDTH-1:0] alu_result_wb;
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb;  // To Hazard Unit
+    logic [`DATA_WIDTH-1:0] pc_plus_4_wb;
+
+    // Signal from Writeback stage to Register File
+    logic [`DATA_WIDTH-1:0] result_w;      // ResultW on diagram
+
+    // Hazard Unit Control Signals
+    logic stall_f;
+    logic stall_d;
+    logic flush_d;
+    logic flush_e;
+    logic [1:0] forward_a_e;
+    logic [1:0] forward_b_e;
+
+    // Assign debug outputs
+    assign current_pc_debug = pc_f;
+    assign fetched_instr_debug = instr_f;
+
+    // Instantiate Pipeline Stages and Registers
+
+    // FETCH STAGE
     fetch u_fetch (
         .clk            (clk),
         .rst_n          (rst_n),
-        .stall_f        (i_stall_f),
-        .pc_src_e       (i_pc_src_e),
-        .pc_target_e    (i_pc_target_e),
-        .instr_f_o      (instr_f_val),
-        .pc_plus_4_f_o  (pc_plus_4_f_val),
-        .pc_f_o         (pc_f_val)
+        .stall_f        (stall_f),          // From Hazard Unit
+        .pc_src_e       (pc_src_from_ex),   // From Execute Stage
+        .pc_target_e    (pc_target_addr_from_ex), // From Execute Stage
+        .instr_f_o      (instr_f),
+        .pc_f_o         (pc_f),
+        .pc_plus_4_f_o  (pc_plus_4_f)
     );
 
+    // IF/ID REGISTER
     if_id_register u_if_id_register (
         .clk            (clk),
         .rst_n          (rst_n),
-        .stall_d        (i_stall_d),
-        .flush_d        (i_flush_d),
-        .instr_f_i      (instr_f_val),
-        .pc_plus_4_f_i  (pc_plus_4_f_val),
-        .pc_f_i         (pc_f_val),
-        .instr_id_o     (o_instr_id),
-        .pc_plus_4_id_o (o_pc_plus_4_id),
-        .pc_id_o        (o_pc_id)
+        .stall_d        (stall_d),          // From Hazard Unit
+        .flush_d        (flush_d),          // From Hazard Unit
+        .instr_f_i      (instr_f),
+        .pc_f_i         (pc_f),
+        .pc_plus_4_f_i  (pc_plus_4_f),
+        .instr_id_o     (instr_id),
+        .pc_id_o        (pc_id),
+        .pc_plus_4_id_o (pc_plus_4_id)
     );
 
-    assign o_current_pc_f = pc_f_val;
+    // DECODE STAGE
+    // Register file write port is connected from MEM/WB register outputs
+    decode u_decode (
+        .clk                (clk),
+        .rst_n              (rst_n),
+        .instr_id_i         (instr_id),
+        .pc_id_i            (pc_id),
+        .pc_plus_4_id_i     (pc_plus_4_id),
+        .rd_write_en_wb_i   (reg_write_wb),     // From MEM/WB (final write enable)
+        .rd_addr_wb_i       (rd_addr_wb),       // From MEM/WB (final rd address)
+        .rd_data_wb_i       (result_w),         // From Writeback MUX (final data to write)
+        .reg_write_d_o      (reg_write_d),
+        .result_src_d_o     (result_src_d),
+        .mem_write_d_o      (mem_write_d),
+        .jump_d_o           (jump_d),
+        .branch_d_o         (branch_d),
+        .alu_src_d_o        (alu_src_d),
+        .alu_control_d_o    (alu_control_d),
+        .funct3_d_o         (funct3_d),
+        .op_a_sel_d_o       (op_a_sel_d),
+        .pc_target_src_sel_d_o (pc_target_src_sel_d),
+        .pc_d_o             (pc_id),            // pc_d_o is just pc_id_i passed through
+        .pc_plus_4_d_o      (pc_plus_4_id),     // pc_plus_4_d_o is just pc_plus_4_id_i passed through
+        .rs1_data_d_o       (rs1_data_d),
+        .rs2_data_d_o       (rs2_data_d),
+        .imm_ext_d_o        (imm_ext_d),
+        .rs1_addr_d_o       (rs1_addr_d),
+        .rs2_addr_d_o       (rs2_addr_d),
+        .rd_addr_d_o        (rd_addr_d)
+    );
+
+    // ID/EX REGISTER
+    id_ex_register u_id_ex_register (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .stall_e        (1'b0),             // stall_e not used per P&H diagram if forwarding handles all, else from HU
+        .flush_e        (flush_e),          // From Hazard Unit
+        .reg_write_d_i  (reg_write_d),
+        .result_src_d_i (result_src_d),
+        .mem_write_d_i  (mem_write_d),
+        .jump_d_i       (jump_d),
+        .branch_d_i     (branch_d),
+        .alu_src_d_i    (alu_src_d),
+        .alu_control_d_i(alu_control_d),
+        .funct3_d_i     (funct3_d),
+        .op_a_sel_d_i   (op_a_sel_d),
+        .pc_target_src_sel_d_i (pc_target_src_sel_d),
+        .pc_d_i         (pc_id),            // pc_d_i from Decode (which is pc_id)
+        .pc_plus_4_d_i  (pc_plus_4_id),
+        .rs1_data_d_i   (rs1_data_d),
+        .rs2_data_d_i   (rs2_data_d),
+        .imm_ext_d_i    (imm_ext_d),
+        .rs1_addr_d_i   (rs1_addr_d),       // Pass Rs1 Addr
+        .rs2_addr_d_i   (rs2_addr_d),       // Pass Rs2 Addr
+        .rd_addr_d_i    (rd_addr_d),
+        .reg_write_e_o  (reg_write_e),
+        .result_src_e_o (result_src_e),
+        .mem_write_e_o  (mem_write_e),
+        .jump_e_o       (jump_e),
+        .branch_e_o     (branch_e),
+        .alu_src_e_o    (alu_src_e),
+        .alu_control_e_o(alu_control_e),
+        .funct3_e_o     (funct3_e),
+        .op_a_sel_e_o   (op_a_sel_e),
+        .pc_target_src_sel_e_o (pc_target_src_sel_e),
+        .pc_e_o         (pc_e),
+        .pc_plus_4_e_o  (pc_plus_4_e),
+        .rs1_data_e_o   (rs1_data_e),
+        .rs2_data_e_o   (rs2_data_e),
+        .imm_ext_e_o    (imm_ext_e),
+        .rs1_addr_e_o   (rs1_addr_e),
+        .rs2_addr_e_o   (rs2_addr_e),
+        .rd_addr_e_o    (rd_addr_e)
+    );
+
+    // EXECUTE STAGE
+    execute u_execute (
+        .reg_write_e_i  (reg_write_e),
+        .result_src_e_i (result_src_e),
+        .mem_write_e_i  (mem_write_e),
+        .jump_e_i       (jump_e),
+        .branch_e_i     (branch_e),
+        .alu_src_e_i    (alu_src_e),
+        .alu_control_e_i(alu_control_e),
+        .funct3_e_i     (funct3_e),
+        .op_a_sel_e_i   (op_a_sel_e),
+        .pc_target_src_sel_e_i (pc_target_src_sel_e),
+        .pc_e_i         (pc_e),
+        .pc_plus_4_e_i  (pc_plus_4_e),
+        .rs1_data_e_i   (rs1_data_e),
+        .rs2_data_e_i   (rs2_data_e),
+        .imm_ext_e_i    (imm_ext_e),
+        .rd_addr_e_i    (rd_addr_e),
+        .forward_data_mem_i ( (result_src_m == 2'b01) ? read_data_wb : alu_result_m ), // Data from MEM output (alu_result_m or read_data_wb)
+        .forward_data_wb_i  (result_w),         // Data from WB output (ResultW)
+        .forward_a_e_i  (forward_a_e),      // From Hazard Unit
+        .forward_b_e_i  (forward_b_e),      // From Hazard Unit
+        .reg_write_m_o  (reg_write_m_ex_out),
+        .result_src_m_o (result_src_m_ex_out),
+        .mem_write_m_o  (mem_write_m_ex_out),
+        .alu_result_m_o (alu_result_m_ex_out),
+        .rs2_data_m_o   (rs2_data_m_ex_out),
+        .rd_addr_m_o    (rd_addr_m_ex_out),
+        .pc_plus_4_m_o  (pc_plus_4_m_ex_out),
+        .funct3_m_o     (funct3_m_ex_out),
+        .pc_src_e_o     (pc_src_from_ex),
+        .pc_target_addr_e_o (pc_target_addr_from_ex)
+    );
+
+    // EX/MEM REGISTER
+    ex_mem_register u_ex_mem_register (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .reg_write_e_i  (reg_write_m_ex_out),
+        .result_src_e_i (result_src_m_ex_out),
+        .mem_write_e_i  (mem_write_m_ex_out),
+        .alu_result_e_i (alu_result_m_ex_out),
+        .rs2_data_e_i   (rs2_data_m_ex_out),
+        .rd_addr_e_i    (rd_addr_m_ex_out),
+        .pc_plus_4_e_i  (pc_plus_4_m_ex_out),
+        .funct3_e_i     (funct3_m_ex_out),
+        .reg_write_m_o  (reg_write_m),
+        .result_src_m_o (result_src_m),
+        .mem_write_m_o  (mem_write_m),
+        .alu_result_m_o (alu_result_m),
+        .rs2_data_m_o   (rs2_data_m),
+        .rd_addr_m_o    (rd_addr_m),
+        .pc_plus_4_m_o  (pc_plus_4_m),
+        .funct3_m_o     (funct3_m)
+    );
+
+    // MEMORY STAGE
+    memory_stage u_memory_stage (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .reg_write_m_i  (reg_write_m),
+        .result_src_m_i (result_src_m),
+        .mem_write_m_i  (mem_write_m),
+        .funct3_m_i     (funct3_m),
+        .alu_result_m_i (alu_result_m),
+        .rs2_data_m_i   (rs2_data_m),
+        .rd_addr_m_i    (rd_addr_m),
+        .pc_plus_4_m_i  (pc_plus_4_m),
+        .reg_write_w_o  (reg_write_w_mem_out),
+        .result_src_w_o (result_src_w_mem_out),
+        .read_data_w_o  (read_data_w_mem_out),
+        .alu_result_w_o (alu_result_w_mem_out), // Pass ALU result through
+        .rd_addr_w_o    (rd_addr_w_mem_out),
+        .pc_plus_4_w_o  (pc_plus_4_w_mem_out)
+    );
+
+    // MEM/WB REGISTER
+    mem_wb_register u_mem_wb_register (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .reg_write_m_i  (reg_write_w_mem_out),
+        .result_src_m_i (result_src_w_mem_out),
+        .read_data_m_i  (read_data_w_mem_out),
+        .alu_result_m_i (alu_result_w_mem_out),
+        .rd_addr_m_i    (rd_addr_w_mem_out),
+        .pc_plus_4_m_i  (pc_plus_4_w_mem_out),
+        .reg_write_wb_o (reg_write_wb),
+        .result_src_wb_o(result_src_wb),
+        .read_data_wb_o (read_data_wb),
+        .alu_result_wb_o(alu_result_wb),
+        .rd_addr_wb_o   (rd_addr_wb),
+        .pc_plus_4_wb_o (pc_plus_4_wb)
+    );
+
+    // WRITEBACK STAGE
+    writeback_stage u_writeback_stage (
+        .result_src_wb_i (result_src_wb),
+        .read_data_wb_i  (read_data_wb),
+        .alu_result_wb_i (alu_result_wb),
+        .pc_plus_4_wb_i  (pc_plus_4_wb),
+        .result_w_o      (result_w)
+    );
+
+    // HAZARD UNIT (Pipeline Control)
+    pipeline_control u_pipeline_control (
+        .rs1_addr_d_i   (rs1_addr_d),    // Rs1D from Decode
+        .rs2_addr_d_i   (rs2_addr_d),    // Rs2D from Decode
+
+        .rd_addr_e_i    (rd_addr_e),     // RdE from ID/EX output
+        .reg_write_e_i  (reg_write_e),   // RegWriteE from ID/EX output
+        .result_src_e_i (result_src_e),  // ResultSrcE from ID/EX output (for load detection)
+
+        .rd_addr_m_i    (rd_addr_m),     // RdM from EX/MEM output
+        .reg_write_m_i  (reg_write_m),   // RegWriteM from EX/MEM output
+
+        .rd_addr_w_i    (rd_addr_wb),    // RdW from MEM/WB output
+        .reg_write_w_i  (reg_write_wb),  // RegWriteW from MEM/WB output
+
+        .pc_src_e_i     (pc_src_from_ex), // PCSrcE from Execute stage output
+
+        .stall_f_o      (stall_f),
+        .stall_d_o      (stall_d),
+        .flush_d_o      (flush_d),
+        .flush_e_o      (flush_e),
+        .forward_a_e_o  (forward_a_e),
+        .forward_b_e_o  (forward_b_e)
+    );
 
 endmodule
 

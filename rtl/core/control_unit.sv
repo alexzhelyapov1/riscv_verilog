@@ -1,36 +1,32 @@
 // rtl/core/control_unit.sv
 `include "common/defines.svh"
-`include "common/alu_defines.svh"      // For new `ALU_OP_*` and `ALU_CONTROL_WIDTH`
-`include "common/immediate_types.svh" // For `immediate_type_e`
-`include "common/riscv_opcodes.svh"   // For instruction opcodes and funct codes
+`include "common/alu_defines.svh"
+`include "common/immediate_types.svh"
+`include "common/riscv_opcodes.svh"
+`include "common/control_signals_defines.svh" // New include
 
 module control_unit (
     // Inputs from instruction
-    input  logic [6:0] op,       // Opcode field
-    input  logic [2:0] funct3,   // Funct3 field
-    input  logic       funct7_5, // Bit 5 of Funct7 field (instr[30])
+    input  logic [6:0] op,
+    input  logic [2:0] funct3,
+    input  logic       funct7_5,
 
-    // Outputs: Control signals for the datapath
-    output logic       reg_write_d_o,    // To ID/EX: Enable register write in WB
-    output logic [1:0] result_src_d_o,   // To ID/EX: Selects result source for WB
-                                         // 00: ALU Result, 01: Memory Read Data, 10: PC+4
-    output logic       mem_write_d_o,    // To ID/EX: Enable data memory write
-    output logic       jump_d_o,         // To ID/EX: Indicates a JAL or JALR type instruction
-    output logic       branch_d_o,       // To ID/EX: Indicates a branch instruction
-    output logic       alu_src_d_o,      // To ID/EX: Selects ALU operand B (Reg vs Imm)
-    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // To ID/EX: Unified ALU operation control
-    output immediate_type_e imm_type_d_o      // To Immediate Generator: Selects immediate type
+    // Outputs: Control signals
+    output logic       reg_write_d_o,
+    output logic [1:0] result_src_d_o,
+    output logic       mem_write_d_o,
+    output logic       jump_d_o,
+    output logic       branch_d_o,
+    output logic       alu_src_d_o,      // Selects ALU operand B (Reg vs Imm)
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o,
+    output immediate_type_e imm_type_d_o,
+    output logic [2:0] funct3_d_o,             // Pass funct3 for branch logic in EX & mem access type in MEM
+    output alu_a_src_sel_e op_a_sel_d_o,        // Selects ALU operand A source
+    output pc_target_src_sel_e pc_target_src_sel_d_o // Selects PC target source for EX
 );
 
-    // Default values for control signals
-    assign reg_write_d_o   = 1'b0;
-    assign result_src_d_o  = 2'b00;
-    assign mem_write_d_o   = 1'b0;
-    assign jump_d_o        = 1'b0;
-    assign branch_d_o      = 1'b0;
-    assign alu_src_d_o     = 1'b0;
-    assign alu_control_d_o = `ALU_OP_ADD; // Default to ADD (NOP-like if other signals are off)
-    assign imm_type_d_o    = IMM_TYPE_NONE;
+    // Pass funct3 directly as it's needed in later stages
+    assign funct3_d_o = funct3;
 
     always_comb begin
         // Initialize signals to a known "safe" or default state for each instruction type
@@ -41,78 +37,89 @@ module control_unit (
         branch_d_o      = 1'b0;
         alu_src_d_o     = 1'b0; // Default: ALU Operand B from Register File (rs2)
         alu_control_d_o = `ALU_OP_ADD; // Default ALU operation
-        imm_type_d_o    = IMM_TYPE_NONE; // Default: No immediate used or relevant for ImmGen path to ALU
+        imm_type_d_o    = IMM_TYPE_NONE;
+        op_a_sel_d_o    = ALU_A_SRC_RS1; // Default
+        pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Default
 
         case (op)
             `OPCODE_LUI: begin
                 reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate
+                alu_src_d_o     = 1'b1; // Imm for OpB
                 imm_type_d_o    = IMM_TYPE_U;
-                alu_control_d_o = `ALU_OP_ADD; // ALU does 0 + ImmExtU. Source A needs to be zero.
-                                               // This relies on datapath providing 0 for SrcA for LUI.
-                                               // Alternative: `ALU_OP_PASS_B` if ALU supported it and SrcA was not needed.
-                result_src_d_o  = 2'b00; // Result from ALU
+                op_a_sel_d_o    = ALU_A_SRC_ZERO; // ALU OpA = 0
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = 0 + Imm
+                result_src_d_o  = 2'b00;
             end
             `OPCODE_AUIPC: begin
                 reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate
+                alu_src_d_o     = 1'b1; // Imm for OpB
                 imm_type_d_o    = IMM_TYPE_U;
-                alu_control_d_o = `ALU_OP_ADD; // ALU does PC + ImmExtU
-                result_src_d_o  = 2'b00; // Result from ALU
+                op_a_sel_d_o    = ALU_A_SRC_PC;   // ALU OpA = PC
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = PC + Imm
+                result_src_d_o  = 2'b00;
             end
             `OPCODE_JAL: begin
                 reg_write_d_o   = 1'b1;
                 jump_d_o        = 1'b1;
-                imm_type_d_o    = IMM_TYPE_J;    // For calculating branch target (PC + ImmExtJ)
-                alu_src_d_o     = 1'b1;          // Target address calculation needs immediate
-                alu_control_d_o = `ALU_OP_ADD;   // PC + ImmExtJ for target. Not for rd data.
-                result_src_d_o  = 2'b10;       // Result to be written (rd) is PC+4
+                imm_type_d_o    = IMM_TYPE_J;
+                result_src_d_o  = 2'b10;      // rd = PC+4
+                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Target = PC + ImmJ
+                // ALU might be idle or used by a separate adder for PC+Imm.
+                // To keep ALU control consistent if it *were* used for target:
+                op_a_sel_d_o    = ALU_A_SRC_PC; // If ALU calculated PC+ImmJ
+                alu_src_d_o     = 1'b1;
+                alu_control_d_o = `ALU_OP_ADD;
             end
-            `OPCODE_JALR: begin // funct3 must be 000
+            `OPCODE_JALR: begin
                 reg_write_d_o   = 1'b1;
                 jump_d_o        = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate (offset)
+                alu_src_d_o     = 1'b1; // Imm for OpB
                 imm_type_d_o    = IMM_TYPE_I;
-                alu_control_d_o = `ALU_OP_ADD;   // Target address is rs1 + ImmExtI
-                result_src_d_o  = 2'b10;       // Result to be written (rd) is PC+4
+                op_a_sel_d_o    = ALU_A_SRC_RS1;  // ALU OpA = RS1
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + Imm (for target calculation)
+                result_src_d_o  = 2'b10;      // rd = PC+4
+                pc_target_src_sel_d_o = PC_TARGET_SRC_ALU_JALR; // Target from ALU result & ~1
             end
-            `OPCODE_BRANCH: begin // BEQ, BNE, BLT, BGE, BLTU, BGEU
+            `OPCODE_BRANCH: begin
                 branch_d_o      = 1'b1;
-                alu_src_d_o     = 1'b0; // ALU compares rs1 and rs2
-                imm_type_d_o    = IMM_TYPE_B; // For branch offset calculation (PC + ImmExtB)
-                reg_write_d_o   = 1'b0; // Branches do not write to RF
-
+                alu_src_d_o     = 1'b0; // OpB = RS2 for comparison
+                op_a_sel_d_o    = ALU_A_SRC_RS1; // OpA = RS1 for comparison
+                imm_type_d_o    = IMM_TYPE_B;    // For PC + ImmB target calculation
+                reg_write_d_o   = 1'b0;
+                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Target is PC+ImmB
                 case (funct3)
-                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB; // Zero flag checked for equality
-                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB; // Zero flag checked for inequality
+                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB;
+                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB;
                     `FUNCT3_BLT:  alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;  // Condition for BGE is !(rs1 < rs2)
+                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;
                     `FUNCT3_BLTU: alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU; // Condition for BGEU is !(rs1 < rs2)unsigned
-                    default:      alu_control_d_o = `ALU_OP_ADD; // Should not happen for valid branch
+                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU;
+                    default:      alu_control_d_o = `ALU_OP_ADD; // Or some invalid op
                 endcase
             end
-            `OPCODE_LOAD: begin // LB, LH, LW, LD, LBU, LHU, LWU
+            `OPCODE_LOAD: begin
                 reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1;    // ALU operand B is immediate (offset)
+                alu_src_d_o     = 1'b1; // Imm for OpB (offset)
                 imm_type_d_o    = IMM_TYPE_I;
-                alu_control_d_o = `ALU_OP_ADD; // Effective address = rs1 + ImmExtI
-                result_src_d_o  = 2'b01;   // Result from Memory
-                mem_write_d_o   = 1'b0;    // Load is a read
+                op_a_sel_d_o    = ALU_A_SRC_RS1;  // OpA = RS1 (base address)
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + offset (address calculation)
+                result_src_d_o  = 2'b01;      // Result from Memory
+                mem_write_d_o   = 1'b0;
             end
-            `OPCODE_STORE: begin // SB, SH, SW, SD
-                alu_src_d_o     = 1'b1;    // ALU operand B is immediate (offset)
+            `OPCODE_STORE: begin
+                alu_src_d_o     = 1'b1; // Imm for OpB (offset)
                 imm_type_d_o    = IMM_TYPE_S;
-                alu_control_d_o = `ALU_OP_ADD; // Effective address = rs1 + ImmExtS
-                mem_write_d_o   = 1'b1;    // Store is a write
-                reg_write_d_o   = 1'b0;    // Stores do not write to RF
+                op_a_sel_d_o    = ALU_A_SRC_RS1;  // OpA = RS1 (base address)
+                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + offset (address calculation)
+                mem_write_d_o   = 1'b1;
+                reg_write_d_o   = 1'b0;
             end
-            `OPCODE_OP_IMM: begin // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
+            `OPCODE_OP_IMM: begin
                 reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // ALU operand B is immediate
-                imm_type_d_o    = IMM_TYPE_I; // Includes shamt for shifts
-                result_src_d_o  = 2'b00; // Result from ALU
-
+                alu_src_d_o     = 1'b1; // Imm for OpB
+                imm_type_d_o    = (funct3 == `FUNCT3_SLLI || funct3 == `FUNCT3_SRLI_SRAI) ? IMM_TYPE_ISHIFT : IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                result_src_d_o  = 2'b00;
                 case (funct3)
                     `FUNCT3_ADDI:  alu_control_d_o = `ALU_OP_ADD;
                     `FUNCT3_SLTI:  alu_control_d_o = `ALU_OP_SLT;
@@ -120,27 +127,20 @@ module control_unit (
                     `FUNCT3_XORI:  alu_control_d_o = `ALU_OP_XOR;
                     `FUNCT3_ORI:   alu_control_d_o = `ALU_OP_OR;
                     `FUNCT3_ANDI:  alu_control_d_o = `ALU_OP_AND;
-                    `FUNCT3_SLLI: begin
-                        alu_control_d_o = `ALU_OP_SLL;
-                        imm_type_d_o    = IMM_TYPE_ISHIFT;
+                    `FUNCT3_SLLI:  alu_control_d_o = `ALU_OP_SLL;
+                    `FUNCT3_SRLI_SRAI: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
+                        else                               alu_control_d_o = `ALU_OP_SRL;
                     end
-                    `FUNCT3_SRLI_SRAI: begin // SRLI or SRAI
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) begin // SRAI (funct7[5]==1 for I-type SRAI)
-                            alu_control_d_o = `ALU_OP_SRA;
-                        end else begin // SRLI (funct7[5]==0 for I-type SRLI)
-                            alu_control_d_o = `ALU_OP_SRL;
-                        end
-                        imm_type_d_o    = IMM_TYPE_ISHIFT;
-                    end
-                    default: alu_control_d_o = `ALU_OP_ADD; // Should not happen
+                    default:       alu_control_d_o = `ALU_OP_ADD;
                 endcase
             end
-            `OPCODE_OP: begin // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
+            `OPCODE_OP: begin
                 reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b0; // ALU operand B from register
-                imm_type_d_o    = IMM_TYPE_NONE; // No immediate for ALU path
-                result_src_d_o  = 2'b00;   // Result from ALU
-
+                alu_src_d_o     = 1'b0; // OpB = RS2
+                op_a_sel_d_o    = ALU_A_SRC_RS1; // OpA = RS1
+                imm_type_d_o    = IMM_TYPE_NONE;
+                result_src_d_o  = 2'b00;
                 case (funct3)
                     `FUNCT3_ADD_SUB: begin
                         if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SUB;
@@ -156,18 +156,11 @@ module control_unit (
                     end
                     `FUNCT3_OR:    alu_control_d_o = `ALU_OP_OR;
                     `FUNCT3_AND:   alu_control_d_o = `ALU_OP_AND;
-                    default:       alu_control_d_o = `ALU_OP_ADD; // Should not happen
+                    default:       alu_control_d_o = `ALU_OP_ADD;
                 endcase
             end
-            default: begin // Unknown opcode, treat as NOP
-                reg_write_d_o   = 1'b0;
-                result_src_d_o  = 2'b00;
-                mem_write_d_o   = 1'b0;
-                jump_d_o        = 1'b0;
-                branch_d_o      = 1'b0;
-                alu_src_d_o     = 1'b0;
-                alu_control_d_o = `ALU_OP_ADD; // Effectively NOP if rd is x0 or RegWriteD is 0
-                imm_type_d_o    = IMM_TYPE_NONE;
+            default: begin // NOP / Unknown
+                // Default assignments from above cover this
             end
         endcase
     end
