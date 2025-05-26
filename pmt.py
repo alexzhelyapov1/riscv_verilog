@@ -5,8 +5,12 @@ import os
 file_paths = [
     'CMakeLists.txt',
 
+    'rtl/core/control_unit.sv',
     'rtl/core/memory.sv',
+    'rtl/core/register_file.sv',
     'rtl/core/execute.sv',
+    'rtl/core/immediate_generator.sv',
+    'rtl/core/id_ex_register.sv',
     'rtl/core/fetch.sv',
     'rtl/core/alu.sv',
     'rtl/core/decode.sv',
@@ -14,14 +18,18 @@ file_paths = [
     'rtl/core/pipeline_control.sv',
     'rtl/core/instruction_memory.sv',
     'rtl/core/if_id_register.sv',
+    'rtl/common/riscv_opcodes.svh',
+    'rtl/common/immediate_types.svh',
     'rtl/common/defines.svh',
     'rtl/common/alu_defines.svh',
     'rtl/pipeline.sv',
 
     'tests/CMakeLists.txt',
+    'tests/unit/decode_tb.sv',
     'tests/unit/fetch_tb.cpp',
     'tests/unit/alu.cpp',
     'tests/unit/CMakeLists.txt',
+    'tests/unit/decode_tb.cpp',
     'tests/unit/fetch_tb.sv',
 ]
 

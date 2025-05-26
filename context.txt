@@ -21,12 +21,417 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_subdirectory(tests)
 
 
+--- File: rtl/core/control_unit.sv ---
+// rtl/core/control_unit.sv
+`include "common/defines.svh"
+`include "common/alu_defines.svh"      // For new `ALU_OP_*` and `ALU_CONTROL_WIDTH`
+`include "common/immediate_types.svh" // For `immediate_type_e`
+`include "common/riscv_opcodes.svh"   // For instruction opcodes and funct codes
+
+module control_unit (
+    // Inputs from instruction
+    input  logic [6:0] op,       // Opcode field
+    input  logic [2:0] funct3,   // Funct3 field
+    input  logic       funct7_5, // Bit 5 of Funct7 field (instr[30])
+
+    // Outputs: Control signals for the datapath
+    output logic       reg_write_d_o,    // To ID/EX: Enable register write in WB
+    output logic [1:0] result_src_d_o,   // To ID/EX: Selects result source for WB
+                                         // 00: ALU Result, 01: Memory Read Data, 10: PC+4
+    output logic       mem_write_d_o,    // To ID/EX: Enable data memory write
+    output logic       jump_d_o,         // To ID/EX: Indicates a JAL or JALR type instruction
+    output logic       branch_d_o,       // To ID/EX: Indicates a branch instruction
+    output logic       alu_src_d_o,      // To ID/EX: Selects ALU operand B (Reg vs Imm)
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // To ID/EX: Unified ALU operation control
+    output immediate_type_e imm_type_d_o      // To Immediate Generator: Selects immediate type
+);
+
+    // Default values for control signals
+    assign reg_write_d_o   = 1'b0;
+    assign result_src_d_o  = 2'b00;
+    assign mem_write_d_o   = 1'b0;
+    assign jump_d_o        = 1'b0;
+    assign branch_d_o      = 1'b0;
+    assign alu_src_d_o     = 1'b0;
+    assign alu_control_d_o = `ALU_OP_ADD; // Default to ADD (NOP-like if other signals are off)
+    assign imm_type_d_o    = IMM_TYPE_NONE;
+
+    always_comb begin
+        // Initialize signals to a known "safe" or default state for each instruction type
+        reg_write_d_o   = 1'b0;
+        result_src_d_o  = 2'b00; // Default: Result from ALU
+        mem_write_d_o   = 1'b0;
+        jump_d_o        = 1'b0;
+        branch_d_o      = 1'b0;
+        alu_src_d_o     = 1'b0; // Default: ALU Operand B from Register File (rs2)
+        alu_control_d_o = `ALU_OP_ADD; // Default ALU operation
+        imm_type_d_o    = IMM_TYPE_NONE; // Default: No immediate used or relevant for ImmGen path to ALU
+
+        case (op)
+            `OPCODE_LUI: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // ALU operand B is immediate
+                imm_type_d_o    = IMM_TYPE_U;
+                alu_control_d_o = `ALU_OP_ADD; // ALU does 0 + ImmExtU. Source A needs to be zero.
+                                               // This relies on datapath providing 0 for SrcA for LUI.
+                                               // Alternative: `ALU_OP_PASS_B` if ALU supported it and SrcA was not needed.
+                result_src_d_o  = 2'b00; // Result from ALU
+            end
+            `OPCODE_AUIPC: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // ALU operand B is immediate
+                imm_type_d_o    = IMM_TYPE_U;
+                alu_control_d_o = `ALU_OP_ADD; // ALU does PC + ImmExtU
+                result_src_d_o  = 2'b00; // Result from ALU
+            end
+            `OPCODE_JAL: begin
+                reg_write_d_o   = 1'b1;
+                jump_d_o        = 1'b1;
+                imm_type_d_o    = IMM_TYPE_J;    // For calculating branch target (PC + ImmExtJ)
+                alu_src_d_o     = 1'b1;          // Target address calculation needs immediate
+                alu_control_d_o = `ALU_OP_ADD;   // PC + ImmExtJ for target. Not for rd data.
+                result_src_d_o  = 2'b10;       // Result to be written (rd) is PC+4
+            end
+            `OPCODE_JALR: begin // funct3 must be 000
+                reg_write_d_o   = 1'b1;
+                jump_d_o        = 1'b1;
+                alu_src_d_o     = 1'b1; // ALU operand B is immediate (offset)
+                imm_type_d_o    = IMM_TYPE_I;
+                alu_control_d_o = `ALU_OP_ADD;   // Target address is rs1 + ImmExtI
+                result_src_d_o  = 2'b10;       // Result to be written (rd) is PC+4
+            end
+            `OPCODE_BRANCH: begin // BEQ, BNE, BLT, BGE, BLTU, BGEU
+                branch_d_o      = 1'b1;
+                alu_src_d_o     = 1'b0; // ALU compares rs1 and rs2
+                imm_type_d_o    = IMM_TYPE_B; // For branch offset calculation (PC + ImmExtB)
+                reg_write_d_o   = 1'b0; // Branches do not write to RF
+
+                case (funct3)
+                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB; // Zero flag checked for equality
+                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB; // Zero flag checked for inequality
+                    `FUNCT3_BLT:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;  // Condition for BGE is !(rs1 < rs2)
+                    `FUNCT3_BLTU: alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU; // Condition for BGEU is !(rs1 < rs2)unsigned
+                    default:      alu_control_d_o = `ALU_OP_ADD; // Should not happen for valid branch
+                endcase
+            end
+            `OPCODE_LOAD: begin // LB, LH, LW, LD, LBU, LHU, LWU
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1;    // ALU operand B is immediate (offset)
+                imm_type_d_o    = IMM_TYPE_I;
+                alu_control_d_o = `ALU_OP_ADD; // Effective address = rs1 + ImmExtI
+                result_src_d_o  = 2'b01;   // Result from Memory
+                mem_write_d_o   = 1'b0;    // Load is a read
+            end
+            `OPCODE_STORE: begin // SB, SH, SW, SD
+                alu_src_d_o     = 1'b1;    // ALU operand B is immediate (offset)
+                imm_type_d_o    = IMM_TYPE_S;
+                alu_control_d_o = `ALU_OP_ADD; // Effective address = rs1 + ImmExtS
+                mem_write_d_o   = 1'b1;    // Store is a write
+                reg_write_d_o   = 1'b0;    // Stores do not write to RF
+            end
+            `OPCODE_OP_IMM: begin // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1; // ALU operand B is immediate
+                imm_type_d_o    = IMM_TYPE_I; // Includes shamt for shifts
+                result_src_d_o  = 2'b00; // Result from ALU
+
+                case (funct3)
+                    `FUNCT3_ADDI:  alu_control_d_o = `ALU_OP_ADD;
+                    `FUNCT3_SLTI:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_SLTIU: alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_XORI:  alu_control_d_o = `ALU_OP_XOR;
+                    `FUNCT3_ORI:   alu_control_d_o = `ALU_OP_OR;
+                    `FUNCT3_ANDI:  alu_control_d_o = `ALU_OP_AND;
+                    `FUNCT3_SLLI:  alu_control_d_o = `ALU_OP_SLL; // funct7_5 is 0
+                    `FUNCT3_SRLI_SRAI: begin // SRLI or SRAI
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) begin // SRAI (funct7[5]==1 for I-type SRAI)
+                            alu_control_d_o = `ALU_OP_SRA;
+                        end else begin // SRLI (funct7[5]==0 for I-type SRLI)
+                            alu_control_d_o = `ALU_OP_SRL;
+                        end
+                    end
+                    default: alu_control_d_o = `ALU_OP_ADD; // Should not happen
+                endcase
+            end
+            `OPCODE_OP: begin // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b0; // ALU operand B from register
+                imm_type_d_o    = IMM_TYPE_NONE; // No immediate for ALU path
+                result_src_d_o  = 2'b00;   // Result from ALU
+
+                case (funct3)
+                    `FUNCT3_ADD_SUB: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SUB;
+                        else                               alu_control_d_o = `ALU_OP_ADD;
+                    end
+                    `FUNCT3_SLL:   alu_control_d_o = `ALU_OP_SLL;
+                    `FUNCT3_SLT:   alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_SLTU:  alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_XOR:   alu_control_d_o = `ALU_OP_XOR;
+                    `FUNCT3_SRL_SRA: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
+                        else                               alu_control_d_o = `ALU_OP_SRL;
+                    end
+                    `FUNCT3_OR:    alu_control_d_o = `ALU_OP_OR;
+                    `FUNCT3_AND:   alu_control_d_o = `ALU_OP_AND;
+                    default:       alu_control_d_o = `ALU_OP_ADD; // Should not happen
+                endcase
+            end
+            default: begin // Unknown opcode, treat as NOP
+                reg_write_d_o   = 1'b0;
+                result_src_d_o  = 2'b00;
+                mem_write_d_o   = 1'b0;
+                jump_d_o        = 1'b0;
+                branch_d_o      = 1'b0;
+                alu_src_d_o     = 1'b0;
+                alu_control_d_o = `ALU_OP_ADD; // Effectively NOP if rd is x0 or RegWriteD is 0
+                imm_type_d_o    = IMM_TYPE_NONE;
+            end
+        endcase
+    end
+endmodule
+
+
 --- File: rtl/core/memory.sv ---
 
 
 
+--- File: rtl/core/register_file.sv ---
+`include "common/defines.svh"
+
+module register_file (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Read Port 1
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_i,
+    output logic [`DATA_WIDTH-1:0]     rs1_data_o,
+
+    // Read Port 2
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_i,
+    output logic [`DATA_WIDTH-1:0]     rs2_data_o,
+
+    // Write Port (from Writeback stage)
+    input  logic                       rd_write_en_wb_i, // RegWriteW
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,    // RdW
+    input  logic [`DATA_WIDTH-1:0]     rd_data_wb_i     // ResultW
+);
+
+    // 32 registers, each DATA_WIDTH bits wide
+    // reg[0] is hardwired to zero
+    logic [`DATA_WIDTH-1:0] regs[31:0];
+
+    // Asynchronous read for rs1_data_o and rs2_data_o
+    // Reading register 0 always yields 0
+    assign rs1_data_o = (rs1_addr_i == `REG_ADDR_WIDTH'(0)) ? `DATA_WIDTH'(0) : regs[rs1_addr_i];
+    assign rs2_data_o = (rs2_addr_i == `REG_ADDR_WIDTH'(0)) ? `DATA_WIDTH'(0) : regs[rs2_addr_i];
+
+    // Synchronous write on positive clock edge
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            // Initialize all registers to 0 on reset (optional, good for simulation)
+            for (int i = 0; i < 32; i++) begin
+                regs[i] <= `DATA_WIDTH'(0);
+            end
+        end else begin
+            if (rd_write_en_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0))) begin
+                regs[rd_addr_wb_i] <= rd_data_wb_i;
+            end
+        end
+    end
+
+    // For simulation, to observe register values (not synthesizable this way usually for direct tb access)
+    // Or use DPI for more robust testbench access
+`ifdef VERILATOR
+    // Provide a way to dump registers for Verilator testing if needed
+    // This is a simplification; direct access for writing/reading from testbench
+    // might be complex or require specific Verilator features like public_flat.
+`endif
+
+endmodule
+
+
 --- File: rtl/core/execute.sv ---
 
+
+
+--- File: rtl/core/immediate_generator.sv ---
+// rtl/core/immediate_generator.sv
+`include "common/defines.svh"
+`include "common/immediate_types.svh"
+
+module immediate_generator (
+    input  logic [`INSTR_WIDTH-1:0] instr_i,
+    input  immediate_type_e         imm_type_sel_i, // Selects the type of immediate to generate
+    output logic [`DATA_WIDTH-1:0]  imm_ext_o      // Sign-extended immediate value
+);
+
+    logic [`DATA_WIDTH-1:0] imm_i_type;
+    logic [`DATA_WIDTH-1:0] imm_s_type;
+    logic [`DATA_WIDTH-1:0] imm_b_type;
+    logic [`DATA_WIDTH-1:0] imm_u_type;
+    logic [`DATA_WIDTH-1:0] imm_j_type;
+
+    // I-type immediate: instr[31:20] (12 bits)
+    assign imm_i_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:20]};
+
+    // S-type immediate: instr[31:25], instr[11:7] (12 bits)
+    assign imm_s_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:25], instr_i[11:7]};
+
+    // B-type immediate: {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0} (13 bits)
+    // Sign-extended from original bit 12 (instr[31]) of the conceptual 13-bit immediate.
+    assign imm_b_type = {{(`DATA_WIDTH-13){instr_i[31]}}, instr_i[31], instr_i[7], instr_i[30:25], instr_i[11:8], 1'b0};
+
+    // U-type immediate: {instr[31:12], 12'b0} (32 bits)
+    // Sign-extended from bit 31 of the effective 32-bit immediate. For RV64, this means sign-extend from bit 31 of the value.
+    assign imm_u_type = {{(`DATA_WIDTH-32){instr_i[31]}}, instr_i[31:12], 12'h000};
+
+    // J-type immediate: {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0} (21 bits)
+    // Sign-extended from original bit 20 (instr[31]) of the conceptual 21-bit immediate.
+    assign imm_j_type = {{(`DATA_WIDTH-21){instr_i[31]}}, instr_i[31], instr_i[19:12], instr_i[20], instr_i[30:21], 1'b0};
+
+    always_comb begin
+        case (imm_type_sel_i)
+            IMM_TYPE_I:    imm_ext_o = imm_i_type;
+            IMM_TYPE_S:    imm_ext_o = imm_s_type;
+            IMM_TYPE_B:    imm_ext_o = imm_b_type;
+            IMM_TYPE_U:    imm_ext_o = imm_u_type;
+            IMM_TYPE_J:    imm_ext_o = imm_j_type;
+            IMM_TYPE_NONE: imm_ext_o = `DATA_WIDTH'(0); // Or 'x if preferred for non-existent immediates
+            default:       imm_ext_o = `DATA_WIDTH'('x); // Should not happen with valid enum
+        endcase
+    end
+
+endmodule
+
+
+--- File: rtl/core/id_ex_register.sv ---
+// rtl/core/id_ex_register.sv
+`include "common/defines.svh"
+`include "common/alu_defines.svh" // For ALU_CONTROL_WIDTH and default ALU_OP_ADD
+
+module id_ex_register (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Control signals from Hazard Unit
+    input  logic stall_e, // Stall: keeps current values
+    input  logic flush_e, // Flush: clears register (outputs NOP-like control)
+
+    // Inputs from Decode Stage
+    // Control Signals
+    input  logic       reg_write_d_i,
+    input  logic [1:0] result_src_d_i,
+    input  logic       mem_write_d_i,
+    input  logic       jump_d_i,
+    input  logic       branch_d_i,
+    input  logic       alu_src_d_i,
+    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_i, // Unified ALU control
+
+    // Data
+    input  logic [`DATA_WIDTH-1:0]  pc_d_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_d_i,
+    input  logic [`DATA_WIDTH-1:0]  rs1_data_d_i,
+    input  logic [`DATA_WIDTH-1:0]  rs2_data_d_i,
+    input  logic [`DATA_WIDTH-1:0]  imm_ext_d_i,
+
+    // Register addresses
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_d_i,
+
+
+    // Outputs to Execute Stage
+    // Control Signals
+    output logic       reg_write_e_o,
+    output logic [1:0] result_src_e_o,
+    output logic       mem_write_e_o,
+    output logic       jump_e_o,
+    output logic       branch_e_o,
+    output logic       alu_src_e_o,
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_e_o, // Unified ALU control
+
+    // Data
+    output logic [`DATA_WIDTH-1:0]  pc_e_o,
+    output logic [`DATA_WIDTH-1:0]  pc_plus_4_e_o,
+    output logic [`DATA_WIDTH-1:0]  rs1_data_e_o,
+    output logic [`DATA_WIDTH-1:0]  rs2_data_e_o,
+    output logic [`DATA_WIDTH-1:0]  imm_ext_e_o,
+
+    // Register addresses
+    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_e_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_e_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_e_o
+);
+
+    // Default NOP-like control values for flush/reset
+    localparam CTL_NOP_REG_WRITE  = 1'b0;
+    localparam CTL_NOP_MEM_WRITE  = 1'b0;
+    localparam CTL_NOP_JUMP       = 1'b0;
+    localparam CTL_NOP_BRANCH     = 1'b0;
+    localparam CTL_NOP_ALU_SRC    = 1'b0;
+    localparam CTL_NOP_ALU_CTRL   = `ALU_OP_ADD; // NOP ALU op
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            reg_write_e_o    <= CTL_NOP_REG_WRITE;
+            result_src_e_o   <= 2'b00;
+            mem_write_e_o    <= CTL_NOP_MEM_WRITE;
+            jump_e_o         <= CTL_NOP_JUMP;
+            branch_e_o       <= CTL_NOP_BRANCH;
+            alu_src_e_o      <= CTL_NOP_ALU_SRC;
+            alu_control_e_o  <= CTL_NOP_ALU_CTRL;
+
+            pc_e_o           <= {`DATA_WIDTH{1'b0}};
+            pc_plus_4_e_o    <= {`DATA_WIDTH{1'b0}};
+            rs1_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            rs2_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            imm_ext_e_o      <= {`DATA_WIDTH{1'b0}};
+            rs1_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rs2_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rd_addr_e_o      <= {`REG_ADDR_WIDTH{1'b0}};
+
+        end else if (flush_e) begin
+            reg_write_e_o    <= CTL_NOP_REG_WRITE;
+            result_src_e_o   <= 2'b00;
+            mem_write_e_o    <= CTL_NOP_MEM_WRITE;
+            jump_e_o         <= CTL_NOP_JUMP;
+            branch_e_o       <= CTL_NOP_BRANCH;
+            alu_src_e_o      <= CTL_NOP_ALU_SRC;
+            alu_control_e_o  <= CTL_NOP_ALU_CTRL;
+            // Data fields can be zeroed
+            pc_e_o           <= {`DATA_WIDTH{1'b0}};
+            pc_plus_4_e_o    <= {`DATA_WIDTH{1'b0}};
+            rs1_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            rs2_data_e_o     <= {`DATA_WIDTH{1'b0}};
+            imm_ext_e_o      <= {`DATA_WIDTH{1'b0}};
+            rs1_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rs2_addr_e_o     <= {`REG_ADDR_WIDTH{1'b0}};
+            rd_addr_e_o      <= {`REG_ADDR_WIDTH{1'b0}}; // Rd for NOP should be x0 if RegWrite is active
+
+        end else if (!stall_e) begin
+            reg_write_e_o    <= reg_write_d_i;
+            result_src_e_o   <= result_src_d_i;
+            mem_write_e_o    <= mem_write_d_i;
+            jump_e_o         <= jump_d_i;
+            branch_e_o       <= branch_d_i;
+            alu_src_e_o      <= alu_src_d_i;
+            alu_control_e_o  <= alu_control_d_i;
+
+            pc_e_o           <= pc_d_i;
+            pc_plus_4_e_o    <= pc_plus_4_d_i;
+            rs1_data_e_o     <= rs1_data_d_i;
+            rs2_data_e_o     <= rs2_data_d_i;
+            imm_ext_e_o      <= imm_ext_d_i;
+            rs1_addr_e_o     <= rs1_addr_d_i;
+            rs2_addr_e_o     <= rs2_addr_d_i;
+            rd_addr_e_o      <= rd_addr_d_i;
+        end
+        // If stalled (stall_e = 1) and not flushed, register holds its value
+    end
+endmodule
 
 
 --- File: rtl/core/fetch.sv ---
@@ -80,46 +485,39 @@ endmodule
 
 
 --- File: rtl/core/alu.sv ---
+// rtl/core/alu.sv
 `include "common/defines.svh"
-`include "common/alu_defines.svh"
+`include "common/alu_defines.svh" // Will use new defines
 
 module alu (
-    input  logic [`DATA_WIDTH-1:0] operand_a,
-    input  logic [`DATA_WIDTH-1:0] operand_b,
-    input  logic [2:0]             alu_op_select,
-    input  logic                   alu_modifier,
-    output logic [`DATA_WIDTH-1:0] result,
-    output logic                   zero_flag
+    input  logic [`DATA_WIDTH-1:0]     operand_a,
+    input  logic [`DATA_WIDTH-1:0]     operand_b,
+    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control, // Unified control signal
+    output logic [`DATA_WIDTH-1:0]     result,
+    output logic                       zero_flag
 );
 
     logic [`DATA_WIDTH-1:0] result_comb;
-    logic [5:0]             shift_amount; // Для RV64, сдвиг на младшие 6 бит operand_b
+    logic [5:0]             shift_amount; // For RV64, shift by lower 6 bits of operand_b
 
     assign shift_amount = operand_b[5:0];
 
     always_comb begin
-        result_comb = {`DATA_WIDTH{1'bx}}; // Значение по умолчанию
+        result_comb = {`DATA_WIDTH{1'bx}}; // Default to 'x'
 
-        case (alu_op_select)
-            `ALU_OP_ADD: result_comb = operand_a + operand_b;
-            `ALU_OP_SUB: result_comb = operand_a - operand_b;
-            `ALU_OP_AND: result_comb = operand_a & operand_b;
-            `ALU_OP_OR:  result_comb = operand_a | operand_b;
-            `ALU_OP_XOR: result_comb = operand_a ^ operand_b;
-            `ALU_OP_SLT_BASE:
-                if (alu_modifier == `ALU_SELECT_SIGNED) begin // SLT (signed)
-                    result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
-                end else begin // alu_modifier == `ALU_SELECT_UNSIGNED` -> SLTU (unsigned)
-                    result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
-                end
-            `ALU_OP_SLL: result_comb = operand_a << shift_amount;
-            `ALU_OP_SR_BASE:
-                if (alu_modifier == `ALU_SELECT_LOGICAL_SR) begin // SRL (logical)
-                    result_comb = operand_a >> shift_amount;
-                end else begin // alu_modifier == `ALU_SELECT_ARITH_SR` -> SRA (arithmetic)
-                    result_comb = $signed(operand_a) >>> shift_amount;
-                end
-            default: result_comb = {`DATA_WIDTH{1'bx}};
+        case (alu_control)
+            `ALU_OP_ADD:  result_comb = operand_a + operand_b;
+            `ALU_OP_SUB:  result_comb = operand_a - operand_b;
+            `ALU_OP_SLL:  result_comb = operand_a << shift_amount;
+            `ALU_OP_SLT:  result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+            `ALU_OP_SLTU: result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+            `ALU_OP_XOR:  result_comb = operand_a ^ operand_b;
+            `ALU_OP_SRL:  result_comb = operand_a >> shift_amount;
+            `ALU_OP_SRA:  result_comb = $signed(operand_a) >>> shift_amount;
+            `ALU_OP_OR:   result_comb = operand_a | operand_b;
+            `ALU_OP_AND:  result_comb = operand_a & operand_b;
+            // `ALU_OP_PASS_B: result_comb = operand_b; // If we had this explicit op
+            default:      result_comb = {`DATA_WIDTH{1'bx}}; // Undefined operation
         endcase
     end
 
@@ -130,7 +528,114 @@ endmodule
 
 
 --- File: rtl/core/decode.sv ---
+// rtl/core/decode.sv
+`include "common/defines.svh"
+`include "common/immediate_types.svh"
+`include "common/alu_defines.svh" // For ALU_CONTROL_WIDTH
 
+module decode (
+    // Inputs from IF/ID Register
+    input  logic [`INSTR_WIDTH-1:0] instr_id_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_id_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_id_i,
+
+    // Inputs from Writeback Stage (for register file write)
+    input  logic                       rd_write_en_wb_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,
+    input  logic [`DATA_WIDTH-1:0]     rd_data_wb_i,
+
+    // Clock and Reset
+    input  logic clk,
+    input  logic rst_n,
+
+    // Outputs to ID/EX Register
+    // Control Signals
+    output logic       reg_write_d_o,
+    output logic [1:0] result_src_d_o,
+    output logic       mem_write_d_o,
+    output logic       jump_d_o,
+    output logic       branch_d_o,
+    output logic       alu_src_d_o,
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o, // Unified ALU control
+
+    // Data
+    output logic [`DATA_WIDTH-1:0]  pc_d_o,
+    output logic [`DATA_WIDTH-1:0]  pc_plus_4_d_o,
+    output logic [`DATA_WIDTH-1:0]  rs1_data_d_o,
+    output logic [`DATA_WIDTH-1:0]  rs2_data_d_o,
+    output logic [`DATA_WIDTH-1:0]  imm_ext_d_o,
+
+    // Register addresses (for hazard unit)
+    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rd_addr_d_o
+);
+
+    // Instruction fields
+    logic [6:0] opcode;
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_instr;
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_instr;
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_instr;
+    logic [2:0] funct3;
+    logic       funct7_5;
+
+    // Intermediate signals
+    immediate_type_e imm_type_sel_internal;
+
+    // Decompose instruction
+    assign opcode         = instr_id_i[6:0];
+    assign rd_addr_instr  = instr_id_i[11:7];
+    assign funct3         = instr_id_i[14:12];
+    assign rs1_addr_instr = instr_id_i[19:15];
+    assign rs2_addr_instr = instr_id_i[24:20];
+    assign funct7_5       = instr_id_i[30]; // Bit 5 of funct7
+
+    // Control Unit instance
+    control_unit u_control_unit (
+        .op                (opcode),
+        .funct3            (funct3),
+        .funct7_5          (funct7_5),
+
+        .reg_write_d_o     (reg_write_d_o),
+        .result_src_d_o    (result_src_d_o),
+        .mem_write_d_o     (mem_write_d_o),
+        .jump_d_o          (jump_d_o),
+        .branch_d_o        (branch_d_o),
+        .alu_src_d_o       (alu_src_d_o),
+        .alu_control_d_o   (alu_control_d_o), // Now unified
+        .imm_type_d_o      (imm_type_sel_internal)
+    );
+
+    // Register File instance
+    register_file u_register_file (
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .rs1_addr_i        (rs1_addr_instr),
+        .rs1_data_o        (rs1_data_d_o),
+        .rs2_addr_i        (rs2_addr_instr),
+        .rs2_data_o        (rs2_data_d_o),
+        .rd_write_en_wb_i  (rd_write_en_wb_i),
+        .rd_addr_wb_i      (rd_addr_wb_i),
+        .rd_data_wb_i      (rd_data_wb_i)
+    );
+
+    // Immediate Generator instance
+    immediate_generator u_immediate_generator (
+        .instr_i           (instr_id_i),
+        .imm_type_sel_i    (imm_type_sel_internal),
+        .imm_ext_o         (imm_ext_d_o)
+    );
+
+    // Pass through PC values
+    assign pc_d_o        = pc_id_i;
+    assign pc_plus_4_d_o = pc_plus_4_id_i;
+
+    // Pass through register addresses for hazard detection and forwarding
+    assign rs1_addr_d_o  = rs1_addr_instr;
+    assign rs2_addr_d_o  = rs2_addr_instr;
+    assign rd_addr_d_o   = rd_addr_instr;
+
+endmodule
 
 
 --- File: rtl/core/writeback.sv ---
@@ -217,6 +722,101 @@ module if_id_register (
 endmodule
 
 
+--- File: rtl/common/riscv_opcodes.svh ---
+// rtl/common/riscv_opcodes.svh
+`ifndef RISCV_OPCODES_SVH
+`define RISCV_OPCODES_SVH
+
+// Opcodes (bottom 7 bits of instruction)
+`define OPCODE_LUI        7'b0110111 // Load Upper Immediate
+`define OPCODE_AUIPC      7'b0010111 // Add Upper Immediate to PC
+`define OPCODE_JAL        7'b1101111 // Jump and Link
+`define OPCODE_JALR       7'b1100111 // Jump and Link Register
+`define OPCODE_BRANCH     7'b1100011 // Conditional Branches (BEQ, BNE, etc.)
+`define OPCODE_LOAD       7'b0000011 // Loads (LB, LH, LW, LD, LBU, LHU, LWU)
+`define OPCODE_STORE      7'b0100011 // Stores (SB, SH, SW, SD)
+`define OPCODE_OP_IMM   7'b0010011 // Immediate Arithmetic/Logic (ADDI, SLTI, etc.)
+`define OPCODE_OP         7'b0110011 // Register-Register Arithmetic/Logic (ADD, SUB, etc.)
+`define OPCODE_MISC_MEM 7'b0001111 // FENCE, FENCE.I
+`define OPCODE_SYSTEM     7'b1110011 // ECALL, EBREAK, CSR instructions
+
+// Funct3 codes for OP_IMM, OP, BRANCH, LOAD, STORE, JALR
+// For OP_IMM & OP
+`define FUNCT3_ADDI       3'b000 // ADDI
+`define FUNCT3_ADD_SUB    3'b000 // ADD/SUB (OP)
+`define FUNCT3_SLLI       3'b001 // SLLI (OP_IMM)
+`define FUNCT3_SLL        3'b001 // SLL (OP)
+`define FUNCT3_SLTI       3'b010 // SLTI (OP_IMM)
+`define FUNCT3_SLT        3'b010 // SLT (OP)
+`define FUNCT3_SLTIU      3'b011 // SLTIU (OP_IMM)
+`define FUNCT3_SLTU       3'b011 // SLTU (OP)
+`define FUNCT3_XORI       3'b100 // XORI (OP_IMM)
+`define FUNCT3_XOR        3'b100 // XOR (OP)
+`define FUNCT3_SRLI_SRAI  3'b101 // SRLI/SRAI (OP_IMM) - Distinguish by funct7
+`define FUNCT3_SRL_SRA    3'b101 // SRL/SRA (OP)     - Distinguish by funct7
+`define FUNCT3_ORI        3'b110 // ORI (OP_IMM)
+`define FUNCT3_OR         3'b110 // OR (OP)
+`define FUNCT3_ANDI       3'b111 // ANDI (OP_IMM)
+`define FUNCT3_AND        3'b111 // AND (OP)
+
+// For BRANCH
+`define FUNCT3_BEQ        3'b000
+`define FUNCT3_BNE        3'b001
+`define FUNCT3_BLT        3'b100
+`define FUNCT3_BGE        3'b101
+`define FUNCT3_BLTU       3'b110
+`define FUNCT3_BGEU       3'b111
+
+// For LOAD
+`define FUNCT3_LB         3'b000
+`define FUNCT3_LH         3'b001
+`define FUNCT3_LW         3'b010
+`define FUNCT3_LD         3'b011 // RV64
+`define FUNCT3_LBU        3'b100
+`define FUNCT3_LHU        3'b101
+`define FUNCT3_LWU        3'b110 // RV64
+
+// For STORE
+`define FUNCT3_SB         3'b000
+`define FUNCT3_SH         3'b001
+`define FUNCT3_SW         3'b010
+`define FUNCT3_SD         3'b011 // RV64
+
+// For JALR
+`define FUNCT3_JALR       3'b000
+
+// Funct7 codes (or relevant bits)
+// For ADD/SUB and SRA/SRL distinction in OP and OP_IMM type instructions.
+// For R-type (OP) and I-type shifts (OP_IMM), bit 5 of funct7 (instr[30]) is often used.
+`define FUNCT7_5_SUB_ALT  1'b1 // For SUB, SRA, SRAI (funct7[5])
+`define FUNCT7_5_ADD_MAIN 1'b0 // For ADD, SRL, SRLI (funct7[5])
+// `define FUNCT7_SRL        7'b0000000 (SRL, SRLI, SRLW, SRLIW)
+// `define FUNCT7_SRA        7'b0100000 (SRA, SRAI, SRAW, SRAIW)
+// `define FUNCT7_ADD        7'b0000000
+// `define FUNCT7_SUB        7'b0100000
+
+`endif // RISCV_OPCODES_SVH
+
+
+--- File: rtl/common/immediate_types.svh ---
+// rtl/common/immediate_types.svh
+`ifndef IMMEDIATE_TYPES_SVH
+`define IMMEDIATE_TYPES_SVH
+
+// Enum for selecting immediate type in immediate_generator
+// This allows the control unit to specify exactly which format to use.
+typedef enum logic [2:0] {
+    IMM_TYPE_NONE, // For R-type or when immediate is not used by ALU operand B or for address calculation
+    IMM_TYPE_I,    // I-type (ADDI, LW, JALR)
+    IMM_TYPE_S,    // S-type (SW)
+    IMM_TYPE_B,    // B-type (Branches)
+    IMM_TYPE_U,    // U-type (LUI, AUIPC)
+    IMM_TYPE_J     // J-type (JAL)
+} immediate_type_e;
+
+`endif // IMMEDIATE_TYPES_SVH
+
+
 --- File: rtl/common/defines.svh ---
 `ifndef COMMON_DEFINES_SVH
 `define COMMON_DEFINES_SVH
@@ -229,25 +829,31 @@ endmodule
 
 
 --- File: rtl/common/alu_defines.svh ---
+// rtl/common/alu_defines.svh
 `ifndef ALU_DEFINES_SVH
 `define ALU_DEFINES_SVH
 
-`define ALU_OP_ADD      3'b000
-`define ALU_OP_SUB      3'b001
-`define ALU_OP_AND      3'b010
-`define ALU_OP_OR       3'b011
-`define ALU_OP_XOR      3'b100
-`define ALU_OP_SLT_BASE 3'b101
-`define ALU_OP_SLL      3'b110
-`define ALU_OP_SR_BASE  3'b111
+`define ALU_CONTROL_WIDTH 4 // Needs 4 bits for ~10 operations
 
-`define ALU_SELECT_SIGNED       1'b0
-`define ALU_SELECT_UNSIGNED     1'b1
+// Unified ALU Control Signals
+// R-Type / I-Type Arithmetic
+`define ALU_OP_ADD  4'b0000 // Addition
+`define ALU_OP_SUB  4'b0001 // Subtraction
+`define ALU_OP_SLL  4'b0010 // Shift Left Logical
+`define ALU_OP_SLT  4'b0011 // Set Less Than (Signed)
+`define ALU_OP_SLTU 4'b0100 // Set Less Than (Unsigned)
+`define ALU_OP_XOR  4'b0101 // XOR
+`define ALU_OP_SRL  4'b0110 // Shift Right Logical
+`define ALU_OP_SRA  4'b0111 // Shift Right Arithmetic
+`define ALU_OP_OR   4'b1000 // OR
+`define ALU_OP_AND  4'b1001 // AND
 
-`define ALU_SELECT_LOGICAL_SR   1'b0
-`define ALU_SELECT_ARITH_SR     1'b1
+// Potentially other operations for specific instructions if needed, e.g., pass Operand B
+// `define ALU_OP_PASS_B 4'b1010 // Pass operand_b directly (e.g., for LUI if srcA is 0)
+// For LUI, it's rd = imm. If ALU is used, srcA=0, srcB=imm, op=ADD. So ALU_OP_ADD works.
+// For AUIPC, it's rd = pc + imm. srcA=PC, srcB=imm, op=ADD. So ALU_OP_ADD works.
 
-`endif
+`endif // ALU_DEFINES_SVH
 
 
 --- File: rtl/pipeline.sv ---
@@ -257,6 +863,112 @@ endmodule
 --- File: tests/CMakeLists.txt ---
 add_custom_target(tests_full)
 add_subdirectory(unit)
+
+
+--- File: tests/unit/decode_tb.sv ---
+`include "common/defines.svh"
+`include "common/immediate_types.svh" // For immediate_type_e if needed here (not directly)
+`include "common/alu_defines.svh"   // For ALU_CONTROL_WIDTH
+
+module decode_tb (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Inputs to control the test environment
+    // To IF/ID register
+    input  logic                       i_if_id_stall_d, // Stall for if_id register
+    input  logic                       i_if_id_flush_d, // Flush for if_id register
+    input  logic [`INSTR_WIDTH-1:0]    i_instr_f,       // Instruction from a virtual "fetch"
+    input  logic [`DATA_WIDTH-1:0]     i_pc_f,          // PC from a virtual "fetch"
+    input  logic [`DATA_WIDTH-1:0]     i_pc_plus_4_f,   // PC+4 from a virtual "fetch"
+
+    // To Register File (for initialization during test, and Writeback simulation)
+    input  logic                       i_wb_write_en,
+    input  logic [`REG_ADDR_WIDTH-1:0] i_wb_rd_addr,
+    input  logic [`DATA_WIDTH-1:0]     i_wb_rd_data,
+
+    // Outputs from Decode stage (to observe)
+    // Control Signals
+    output logic       o_reg_write_d,
+    output logic [1:0] o_result_src_d,
+    output logic       o_mem_write_d,
+    output logic       o_jump_d,
+    output logic       o_branch_d,
+    output logic       o_alu_src_d,
+    output logic [`ALU_CONTROL_WIDTH-1:0] o_alu_control_d,
+
+    // Data
+    output logic [`DATA_WIDTH-1:0]  o_pc_d,
+    output logic [`DATA_WIDTH-1:0]  o_pc_plus_4_d,
+    output logic [`DATA_WIDTH-1:0]  o_rs1_data_d,
+    output logic [`DATA_WIDTH-1:0]  o_rs2_data_d,
+    output logic [`DATA_WIDTH-1:0]  o_imm_ext_d,
+
+    // Register addresses
+    output logic [`REG_ADDR_WIDTH-1:0] o_rs1_addr_d,
+    output logic [`REG_ADDR_WIDTH-1:0] o_rs2_addr_d,
+    output logic [`REG_ADDR_WIDTH-1:0] o_rd_addr_d,
+
+    // Output from IF/ID for sanity check
+    output logic [`INSTR_WIDTH-1:0]    o_instr_id,
+    output logic [`DATA_WIDTH-1:0]     o_pc_id,
+    output logic [`DATA_WIDTH-1:0]     o_pc_plus_4_id
+);
+
+    // Signals between IF/ID and Decode
+    logic [`INSTR_WIDTH-1:0]    instr_id_val;
+    logic [`DATA_WIDTH-1:0]     pc_id_val;
+    logic [`DATA_WIDTH-1:0]     pc_plus_4_id_val;
+
+    // IF/ID Register instance
+    // Note: stall_d and flush_d control the *output* of IF/ID (input to Decode)
+    // stall_d for IF/ID means Decode stage is stalled, so IF/ID holds.
+    if_id_register u_if_id_reg (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .stall_d        (i_if_id_stall_d), // Stall signal for IF/ID (from Hazard Unit usually)
+        .flush_d        (i_if_id_flush_d), // Flush signal for IF/ID
+        .instr_f_i      (i_instr_f),
+        .pc_f_i         (i_pc_f),
+        .pc_plus_4_f_i  (i_pc_plus_4_f),
+        .instr_id_o     (instr_id_val),
+        .pc_id_o        (pc_id_val),
+        .pc_plus_4_id_o (pc_plus_4_id_val)
+    );
+
+    // Decode Stage instance
+    decode u_decode (
+        .clk                (clk),
+        .rst_n              (rst_n),
+        .instr_id_i         (instr_id_val),
+        .pc_id_i            (pc_id_val),
+        .pc_plus_4_id_i     (pc_plus_4_id_val),
+        .rd_write_en_wb_i   (i_wb_write_en),     // From testbench for WB sim
+        .rd_addr_wb_i       (i_wb_rd_addr),      // From testbench for WB sim
+        .rd_data_wb_i       (i_wb_rd_data),      // From testbench for WB sim
+        .reg_write_d_o      (o_reg_write_d),
+        .result_src_d_o     (o_result_src_d),
+        .mem_write_d_o      (o_mem_write_d),
+        .jump_d_o           (o_jump_d),
+        .branch_d_o         (o_branch_d),
+        .alu_src_d_o        (o_alu_src_d),
+        .alu_control_d_o    (o_alu_control_d),
+        .pc_d_o             (o_pc_d),
+        .pc_plus_4_d_o      (o_pc_plus_4_d),
+        .rs1_data_d_o       (o_rs1_data_d),
+        .rs2_data_d_o       (o_rs2_data_d),
+        .imm_ext_d_o        (o_imm_ext_d),
+        .rs1_addr_d_o       (o_rs1_addr_d),
+        .rs2_addr_d_o       (o_rs2_addr_d),
+        .rd_addr_d_o        (o_rd_addr_d)
+    );
+
+    // Assign IF/ID outputs for observation
+    assign o_instr_id     = instr_id_val;
+    assign o_pc_id        = pc_id_val;
+    assign o_pc_plus_4_id = pc_plus_4_id_val;
+
+endmodule
 
 
 --- File: tests/unit/fetch_tb.cpp ---
@@ -438,7 +1150,8 @@ int main(int argc, char** argv) {
 
 
 --- File: tests/unit/alu.cpp ---
-#include "Valu.h"
+// tests/unit/alu.cpp
+#include "Valu.h" // Verilator generated header for alu module
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
@@ -450,80 +1163,94 @@ int main(int argc, char** argv) {
 #include <vector>
 #include <bitset>
 
-const uint8_t ALU_OP_ADD      = 0b000;
-const uint8_t ALU_OP_SUB      = 0b001;
-const uint8_t ALU_OP_AND      = 0b010;
-const uint8_t ALU_OP_OR       = 0b011;
-const uint8_t ALU_OP_XOR      = 0b100;
-const uint8_t ALU_OP_SLT_BASE = 0b101;
-const uint8_t ALU_OP_SLL      = 0b110;
-const uint8_t ALU_OP_SR_BASE  = 0b111;
-
-const uint8_t ALU_SELECT_SIGNED     = 0;
-const uint8_t ALU_SELECT_UNSIGNED   = 1;
-const uint8_t ALU_SELECT_LOGICAL_SR = 0;
-const uint8_t ALU_SELECT_ARITH_SR   = 1;
+// New ALU Control Opcodes (from alu_defines.svh)
+const uint8_t ALU_OP_ADD  = 0b0000;
+const uint8_t ALU_OP_SUB  = 0b0001;
+const uint8_t ALU_OP_SLL  = 0b0010;
+const uint8_t ALU_OP_SLT  = 0b0011;
+const uint8_t ALU_OP_SLTU = 0b0100;
+const uint8_t ALU_OP_XOR  = 0b0101;
+const uint8_t ALU_OP_SRL  = 0b0110;
+const uint8_t ALU_OP_SRA  = 0b0111;
+const uint8_t ALU_OP_OR   = 0b1000;
+const uint8_t ALU_OP_AND  = 0b1001;
+// const uint8_t ALU_OP_PASS_B = 0b1010; // If added
 
 vluint64_t sim_time = 0;
 
+// Verilator simulation time function (if not using sc_core::sc_time_stamp)
 double sc_time_stamp() {
     return sim_time;
 }
 
-void eval_alu(Valu* alu, VerilatedVcdC* tfp) {
-    alu->eval();
+void eval_alu(Valu* alu_core, VerilatedVcdC* tfp) {
+    alu_core->eval();
     if (tfp) tfp->dump(sim_time);
 }
 
 struct AluTestCase {
     uint64_t a, b;
-    uint8_t alu_op_sel;
-    uint8_t alu_mod;
+    uint8_t alu_control_val; // Changed from alu_op_sel and alu_mod
     uint64_t expected_res;
     bool expected_zero;
-    // Убраны expected_cout и expected_ovf
     std::string name;
 };
 
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
-    Valu* top = new Valu;
+    Valu* top = new Valu; // Name of the Verilog module is 'alu', Verilator prepends 'V'
 
     Verilated::traceEverOn(true);
     VerilatedVcdC* tfp = new VerilatedVcdC;
     top->trace(tfp, 99);
     tfp->open("tb_alu.vcd");
 
-    std::cout << "Starting Simplified ALU Testbench (RV64)" << std::endl;
+    std::cout << "Starting Unified ALU Testbench (RV64)" << std::endl;
 
     AluTestCase tests[] = {
-        {5, 10, ALU_OP_ADD, 0, 15, false, "ADD 5+10"},
-        {0xFFFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0, 0, true, "ADD -1+1"},
-        {0x7FFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0, 0x8000000000000000ULL, false, "ADD signed ovf (MAX_POS+1)"}, // Результат все равно вычисляется
+        // ADD tests
+        {5, 10, ALU_OP_ADD, 15, false, "ADD 5+10"},
+        {0xFFFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0, true, "ADD -1+1 (wrap)"},
+        {0x7FFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0x8000000000000000ULL, false, "ADD MAX_POS+1 (signed ovf)"},
 
-        {10, 5, ALU_OP_SUB, 0, 5, false, "SUB 10-5"},
-        {5, 10, ALU_OP_SUB, 0, (uint64_t)-5, false, "SUB 5-10"},
-        {0x8000000000000000ULL, 1, ALU_OP_SUB, 0, 0x7FFFFFFFFFFFFFFFULL, false, "SUB signed ovf (MIN_NEG-1)"},
-        {10, 10, ALU_OP_SUB, 0, 0, true, "SUB 10-10 (zero)"},
+        // SUB tests
+        {10, 5, ALU_OP_SUB, 5, false, "SUB 10-5"},
+        {5, 10, ALU_OP_SUB, (uint64_t)-5, false, "SUB 5-10"},
+        {0x8000000000000000ULL, 1, ALU_OP_SUB, 0x7FFFFFFFFFFFFFFFULL, false, "SUB MIN_NEG-1 (signed ovf)"},
+        {10, 10, ALU_OP_SUB, 0, true, "SUB 10-10 (zero)"},
 
-        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_AND, 0, 0x00ULL, true, "AND"},
-        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_OR,  0, 0xFFFFFFFFFFFFFFFFULL, false, "OR"},
-        {0xFF00FF00FF00FF00ULL, 0x00FFFF00FFFF00FFULL, ALU_OP_XOR, 0, 0xFFFF000000FFFFFFULL, false, "XOR"},
+        // Logical tests
+        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_AND, 0x00ULL, true, "AND all zeros"},
+        {0xF0F0F0F0F0F0F0F0ULL, 0xFFFFFFFFFFFFFFFFULL, ALU_OP_AND, 0xF0F0F0F0F0F0F0F0ULL, false, "AND with FFs"},
+        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_OR,  0xFFFFFFFFFFFFFFFFULL, false, "OR"},
+        {0xFF00FF00FF00FF00ULL, 0x00FFFF00FFFF00FFULL, ALU_OP_XOR, 0xFFFF000000FFFFFFULL, false, "XOR"},
 
-        {5, 10, ALU_OP_SLT_BASE, ALU_SELECT_SIGNED, 1, false, "SLT 5<10"},
-        {10, 5, ALU_OP_SLT_BASE, ALU_SELECT_SIGNED, 0, true, "SLT 10<5"},
-        {(uint64_t)-5, 2, ALU_OP_SLT_BASE, ALU_SELECT_SIGNED, 1, false, "SLT -5<2 (signed)"},
+        // SLT / SLTU tests
+        {5, 10, ALU_OP_SLT, 1, false, "SLT 5<10 (signed)"},
+        {10, 5, ALU_OP_SLT, 0, true, "SLT 10<5 (signed)"},
+        {(uint64_t)-5, 2, ALU_OP_SLT, 1, false, "SLT -5<2 (signed)"},
+        {2, (uint64_t)-5, ALU_OP_SLT, 0, true, "SLT 2<-5 (signed)"},
+        {(uint64_t)-10, (uint64_t)-5, ALU_OP_SLT, 1, false, "SLT -10<-5 (signed)"},
 
-        {5, 10, ALU_OP_SLT_BASE, ALU_SELECT_UNSIGNED, 1, false, "SLTU 5<10"},
-        {10, 5, ALU_OP_SLT_BASE, ALU_SELECT_UNSIGNED, 0, true, "SLTU 10<5"},
-        {(uint64_t)-5, 2, ALU_OP_SLT_BASE, ALU_SELECT_UNSIGNED, 0, true, "SLTU large_val<2 (unsigned)"},
+        {5, 10, ALU_OP_SLTU, 1, false, "SLTU 5<10 (unsigned)"},
+        {10, 5, ALU_OP_SLTU, 0, true, "SLTU 10<5 (unsigned)"},
+        {(uint64_t)-5, 2, ALU_OP_SLTU, 0, true, "SLTU large_val<2 (unsigned, -5 is large positive)"}, // -5ULL is large positive
+        {2, (uint64_t)-5, ALU_OP_SLTU, 1, false, "SLTU 2<large_val (unsigned)"},
 
-        {0x1ULL, 3, ALU_OP_SLL, 0, 0x8ULL, false, "SLL 1<<3 (val=3)"},
-        {0xABCDEF0123456789ULL, 64, ALU_OP_SLL, 0, 0xABCDEF0123456789ULL, false, "SLL by 64 (shamt=0)"},
+        // Shift tests
+        {0x1ULL, 3, ALU_OP_SLL, 0x8ULL, false, "SLL 1<<3 (shamt=3)"},
+        {0xABCDEF0123456789ULL, 64, ALU_OP_SLL, 0xABCDEF0123456789ULL, false, "SLL by 64 (actual shamt=0)"}, // operand_b[5:0] is 0
+        {0xABCDEF0123456789ULL, 0, ALU_OP_SLL, 0xABCDEF0123456789ULL, false, "SLL by 0"},
 
-        {0x800000000000000FULL, 4, ALU_OP_SR_BASE, ALU_SELECT_LOGICAL_SR, 0x0800000000000000ULL, false, "SRL"},
-        {0x8000000000000000ULL, 1, ALU_OP_SR_BASE, ALU_SELECT_ARITH_SR,   0xC000000000000000ULL, false, "SRA neg"},
-        {0x4000000000000000ULL, 1, ALU_OP_SR_BASE, ALU_SELECT_ARITH_SR,   0x2000000000000000ULL, false, "SRA pos"}
+        {0xF00000000000000FULL, 4, ALU_OP_SRL, 0x0F00000000000000ULL, false, "SRL positive val"},
+        {0x8000000000000000ULL, 1, ALU_OP_SRL, 0x4000000000000000ULL, false, "SRL MSB set val"},
+
+        {0x8000000000000000ULL, 1, ALU_OP_SRA, 0xC000000000000000ULL, false, "SRA negative val"},
+        {0x4000000000000000ULL, 1, ALU_OP_SRA, 0x2000000000000000ULL, false, "SRA positive val"},
+        {0xFFFFFFFFFFFFFFF0ULL, 4, ALU_OP_SRA, 0xFFFFFFFFFFFFFFFFULL, false, "SRA -16 >> 4 = -1"}
+
+        // Test for PASS_B if added
+        // {123, 456, ALU_OP_PASS_B, 456, false, "PASS_B"}
     };
 
     int num_tests = sizeof(tests) / sizeof(AluTestCase);
@@ -534,11 +1261,10 @@ int main(int argc, char** argv) {
 
         top->operand_a = t.a;
         top->operand_b = t.b;
-        top->alu_op_select = t.alu_op_sel;
-        top->alu_modifier = t.alu_mod;
+        top->alu_control = t.alu_control_val; // Use the new unified control signal
 
         eval_alu(top, tfp);
-        sim_time++;
+        sim_time++; // Increment simulation time for VCD
 
         bool pass = (top->result == t.expected_res) &&
                     (top->zero_flag == t.expected_zero);
@@ -548,14 +1274,14 @@ int main(int argc, char** argv) {
         } else {
             std::cout << "FAIL Test: " << t.name << std::endl;
             std::cout << "  Input: A=0x" << std::hex << t.a << ", B=0x" << t.b
-                      << ", OpSel=" << std::bitset<3>(t.alu_op_sel) << ", Mod=" << (int)t.alu_mod << std::dec << std::endl;
+                      << ", ALUControl=0b" << std::bitset<4>(t.alu_control_val) << std::dec << std::endl;
             std::cout << "  Got  : Res=0x" << std::hex << top->result << ", Zero=" << (int)top->zero_flag << std::dec << std::endl;
             std::cout << "  Exp  : Res=0x" << std::hex << t.expected_res << ", Zero=" << (int)t.expected_zero << std::dec << std::endl;
         }
-        assert(pass);
+        assert(pass); // Stop on first failure for easier debugging
     }
 
-    std::cout << "\nSimplified ALU Testbench Finished. Passed " << passed_tests << "/" << num_tests << " tests." << std::endl;
+    std::cout << "\nUnified ALU Testbench Finished. Passed " << passed_tests << "/" << num_tests << " tests." << std::endl;
 
     if (tfp) tfp->close();
     delete top;
@@ -618,6 +1344,319 @@ add_verilator_test(
     ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
     ${CMAKE_SOURCE_DIR}/tests/unit/fetch_tb.sv
 )
+
+add_verilator_test(
+    decode_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/decode.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/decode_tb.sv
+)
+
+
+--- File: tests/unit/decode_tb.cpp ---
+// tests/unit/decode_tb.cpp
+#include "Vdecode_tb.h"
+#include "verilated.h"
+#include "verilated_vcd_c.h"
+
+#include <iostream>
+#include <iomanip>
+#include <cstdint>
+#include <vector>
+#include <string>
+#include <map>
+#include <bitset> // For printing ALU control in binary
+
+// MANUALLY DEFINED CONSTANTS (mirroring .svh files for testbench use)
+
+// From common/alu_defines.svh
+const int ALU_CONTROL_WIDTH = 4; // Needs 4 bits for ~10 operations
+const uint8_t ALU_OP_ADD  = 0b0000;
+const uint8_t ALU_OP_SUB  = 0b0001;
+const uint8_t ALU_OP_SLL  = 0b0010;
+const uint8_t ALU_OP_SLT  = 0b0011;
+const uint8_t ALU_OP_SLTU = 0b0100;
+const uint8_t ALU_OP_XOR  = 0b0101;
+const uint8_t ALU_OP_SRL  = 0b0110;
+const uint8_t ALU_OP_SRA  = 0b0111;
+const uint8_t ALU_OP_OR   = 0b1000;
+const uint8_t ALU_OP_AND  = 0b1001;
+
+// From common/riscv_opcodes.svh (only those needed for test case generation/verification)
+// Opcodes (not strictly needed if instructions are pre-calculated, but good for clarity)
+// const uint8_t OPCODE_LUI     = 0b0110111;
+// const uint8_t OPCODE_AUIPC   = 0b0010111;
+// const uint8_t OPCODE_JAL     = 0b1101111;
+// const uint8_t OPCODE_JALR    = 0b1100111;
+// const uint8_t OPCODE_BRANCH  = 0b1100011;
+// const uint8_t OPCODE_LOAD    = 0b0000011;
+const uint8_t OPCODE_STORE   = 0b0100011;
+// const uint8_t OPCODE_OP_IMM  = 0b0010011;
+// const uint8_t OPCODE_OP      = 0b0110011;
+
+// General defines
+const uint32_t NOP_INSTRUCTION = 0x00000013; // addi x0, x0, 0
+
+vluint64_t sim_time = 0;
+
+void tick(Vdecode_tb* dut, VerilatedVcdC* tfp) {
+    dut->clk = 0;
+    dut->eval();
+    if (tfp) tfp->dump(sim_time);
+    sim_time++;
+
+    dut->clk = 1;
+    dut->eval();
+    if (tfp) tfp->dump(sim_time);
+    sim_time++;
+}
+
+void reset_dut(Vdecode_tb* dut, VerilatedVcdC* tfp) {
+    dut->rst_n = 0;
+    dut->i_if_id_stall_d = 0;
+    dut->i_if_id_flush_d = 0;
+    dut->i_instr_f = NOP_INSTRUCTION;
+    dut->i_pc_f = 0;
+    dut->i_pc_plus_4_f = 4;
+    dut->i_wb_write_en = 0;
+    dut->i_wb_rd_addr = 0;
+    dut->i_wb_rd_data = 0;
+
+    for (int i = 0; i < 5; ++i) {
+        tick(dut, tfp);
+    }
+    dut->rst_n = 1;
+    tick(dut, tfp);
+    std::cout << "DUT Reset" << std::endl;
+}
+
+void set_reg(Vdecode_tb* dut, VerilatedVcdC* tfp, uint8_t reg_addr, uint64_t data) {
+    if (reg_addr == 0) return;
+
+    dut->i_wb_write_en = 1;
+    dut->i_wb_rd_addr = reg_addr;
+    dut->i_wb_rd_data = data;
+    tick(dut, tfp);
+    dut->i_wb_write_en = 0;
+}
+
+struct ExpectedControls {
+    bool        reg_write;
+    uint8_t     result_src;
+    bool        mem_write;
+    bool        jump;
+    bool        branch;
+    bool        alu_src;
+    uint8_t     alu_control;
+};
+
+struct DecodeTestCase {
+    std::string name;
+    uint32_t    instruction;
+    uint64_t    pc_val;
+    std::map<uint8_t, uint64_t> initial_regs;
+    ExpectedControls controls;
+    uint64_t    expected_rs1_data;
+    uint64_t    expected_rs2_data;
+    uint64_t    expected_imm_ext;
+    uint8_t     expected_rs1_addr;
+    uint8_t     expected_rs2_addr;
+    uint8_t     expected_rd_addr;
+};
+
+// Helper to extract fields from instruction for verification in C++
+uint8_t get_opcode_cpp(uint32_t instr) { return instr & 0x7F; } // Not used if instructions are pre-encoded
+uint8_t get_rd_cpp(uint32_t instr) { return (instr >> 7) & 0x1F; }
+// uint8_t get_funct3_cpp(uint32_t instr) { return (instr >> 12) & 0x07; } // Not used if instructions are pre-encoded
+uint8_t get_rs1_cpp(uint32_t instr) { return (instr >> 15) & 0x1F; }
+uint8_t get_rs2_cpp(uint32_t instr) { return (instr >> 20) & 0x1F; }
+
+
+int main(int argc, char** argv) {
+    Verilated::commandArgs(argc, argv);
+    Vdecode_tb* top = new Vdecode_tb;
+
+    Verilated::traceEverOn(true);
+    VerilatedVcdC* tfp = new VerilatedVcdC;
+    top->trace(tfp, 99);
+    tfp->open("tb_decode.vcd");
+
+    std::cout << "Starting Decode Stage Testbench" << std::endl;
+
+    reset_dut(top, tfp);
+
+    std::vector<DecodeTestCase> test_cases = {
+        // Test cases from previous response... (no change here, they use the C++ consts now)
+        {
+            "ADDI x1, x2, 10", 0x00A10093, 0x100, // ADDI x1, x2, 10 (10_decimal = 0xA)
+            {{2, 0x200}}, // x2 = 0x200
+            {true, 0b00, false, false, false, true, ALU_OP_ADD},
+            0x200, 0x0, 0xA, 2, 0, 1 // rs1=x2, rs2=n/a, rd=x1
+        },
+        {
+            "ADD x3, x1, x2", 0x002081B3, 0x104, // ADD x3, x1, x2
+            {{1, 0x10}, {2, 0x20}}, // x1 = 0x10, x2 = 0x20
+            {true, 0b00, false, false, false, false, ALU_OP_ADD},
+            0x10, 0x20, 0x0, 1, 2, 3 // rs1=x1, rs2=x2, rd=x3. ImmExt can be 0.
+        },
+        {
+            "LUI x5, 0xABCD0", 0xABCD02B7, 0x108, // LUI x5, 0xABCD0 (0xABCD << 12 results in 0xABCD0000)
+            {},
+            {true, 0b00, false, false, false, true, ALU_OP_ADD}, // ALU: 0 + Imm.
+            0x0, 0x0, 0xABCD0000ULL, 0, 0, 5 // Corrected expected_imm_ext for LUI
+        },
+        {
+            "LW x6, 12(x1)", 0x00C0A303, 0x10C, // LW x6, 12(x1) (funct3=010 for LW)
+            {{1, 0x40}}, // x1 = 0x40
+            {true, 0b01, false, false, false, true, ALU_OP_ADD},
+            0x40, 0x0, 0xC, 1, 0, 6
+        },
+        {
+            "SW x7, 16(x2)", 0x01112823, 0x110, // SW x7, 16(x2) (funct3=010 for SW)
+            {{2, 0x80}, {7, 0xFFFF}},
+            {false, 0b00, true, false, false, true, ALU_OP_ADD},
+            0x80, 0xFFFF, 0x10, 2, 7, 0 // rd_addr is 0 because RegWrite is false
+        },
+        {
+            "BEQ x1, x2, +0x20", 0x02208A63, 0x114, // Corrected instruction encoding for BEQ x1, x2, +0x20
+                                                   // Offset 0x20 means imm[12|10:5|4:1|11] = 0|000010|0000|0 (B-type)
+                                                   // instr[31]=imm[12], instr[30:25]=imm[10:5], instr[11:8]=imm[4:1], instr[7]=imm[11]
+                                                   // 0x20 -> imm12=0, imm11=0, imm10_5=000010, imm4_1=0000
+                                                   // instr[31]=0, instr[30:25]=000010, instr[11:8]=0000, instr[7]=0
+                                                   // rs2=x2, rs1=x1. 0000001 00010 00001 000 00000 1100011 => 0x02208A63
+            {{1, 100}, {2, 100}},
+            {false, 0b00, false, false, true, false, ALU_OP_SUB},
+            100, 100, 0x20, 1, 2, 0 // rd_addr is 0 because RegWrite is false
+        },
+        {
+            "JAL x0, +0x40", 0x0400006F, 0x118, // JAL x0, +0x40 (target PC + 0x40)
+            {},
+            {true, 0b10, false, true, false, true, ALU_OP_ADD},
+            0, 0, 0x40, 0, 0, 0
+        },
+        {
+            "NOP", NOP_INSTRUCTION, 0x200,
+            {},
+            {true, 0b00, false, false, false, true, ALU_OP_ADD},
+            0,0,0, get_rs1_cpp(NOP_INSTRUCTION), get_rs2_cpp(NOP_INSTRUCTION), get_rd_cpp(NOP_INSTRUCTION)
+        }
+    };
+
+    int passed_count = 0;
+    for (const auto& tc : test_cases) {
+        std::cout << "\nRunning Test: " << tc.name << std::endl;
+        std::cout << "  Instruction: 0x" << std::hex << tc.instruction << std::dec << std::endl;
+
+        reset_dut(top, tfp);
+        for(const auto& reg_pair : tc.initial_regs) {
+            set_reg(top, tfp, reg_pair.first, reg_pair.second);
+        }
+        // One tick for register values to settle before IF/ID latches instruction
+        if (!tc.initial_regs.empty()) { // Only tick if registers were set
+             tick(top, tfp);
+        }
+
+
+        top->i_instr_f = tc.instruction;
+        top->i_pc_f = tc.pc_val;
+        top->i_pc_plus_4_f = tc.pc_val + 4;
+        top->i_if_id_stall_d = 0;
+        top->i_if_id_flush_d = 0;
+
+        tick(top, tfp); // Let IF/ID latch
+        tick(top, tfp); // Let Decode process
+
+        bool current_pass = true;
+        if (top->o_reg_write_d != tc.controls.reg_write) {
+            std::cout << "  FAIL: RegWrite_D. Exp: " << tc.controls.reg_write << ", Got: " << (int)top->o_reg_write_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_result_src_d != tc.controls.result_src) {
+            std::cout << "  FAIL: ResultSrc_D. Exp: " << (int)tc.controls.result_src << ", Got: " << (int)top->o_result_src_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_mem_write_d != tc.controls.mem_write) {
+            std::cout << "  FAIL: MemWrite_D. Exp: " << tc.controls.mem_write << ", Got: " << (int)top->o_mem_write_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_jump_d != tc.controls.jump) {
+            std::cout << "  FAIL: Jump_D. Exp: " << tc.controls.jump << ", Got: " << (int)top->o_jump_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_branch_d != tc.controls.branch) {
+            std::cout << "  FAIL: Branch_D. Exp: " << tc.controls.branch << ", Got: " << (int)top->o_branch_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_alu_src_d != tc.controls.alu_src) {
+            std::cout << "  FAIL: AluSrc_D. Exp: " << tc.controls.alu_src << ", Got: " << (int)top->o_alu_src_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_alu_control_d != tc.controls.alu_control) {
+            std::cout << "  FAIL: AluControl_D. Exp: 0b" << std::bitset<ALU_CONTROL_WIDTH>(tc.controls.alu_control)
+                      << ", Got: 0b" << std::bitset<ALU_CONTROL_WIDTH>(top->o_alu_control_d) << std::endl;
+            current_pass = false;
+        }
+        if (top->o_pc_d != tc.pc_val) {
+             std::cout << "  FAIL: PC_D. Exp: 0x" << std::hex << tc.pc_val << ", Got: 0x" << top->o_pc_d << std::dec << std::endl;
+            current_pass = false;
+        }
+        if (top->o_pc_plus_4_d != (tc.pc_val + 4)) {
+             std::cout << "  FAIL: PCPlus4_D. Exp: 0x" << std::hex << (tc.pc_val + 4) << ", Got: 0x" << top->o_pc_plus_4_d << std::dec << std::endl;
+            current_pass = false;
+        }
+
+        uint8_t instr_rs1_addr_val = get_rs1_cpp(tc.instruction);
+        uint64_t expected_rs1_val = (instr_rs1_addr_val == 0) ? 0 : tc.expected_rs1_data;
+        if (top->o_rs1_data_d != expected_rs1_val) {
+            std::cout << "  FAIL: Rs1Data_D. Exp: 0x" << std::hex << expected_rs1_val << ", Got: 0x" << top->o_rs1_data_d << std::dec << std::endl;
+            current_pass = false;
+        }
+
+        uint8_t instr_rs2_addr_val = get_rs2_cpp(tc.instruction);
+        uint64_t expected_rs2_val = (instr_rs2_addr_val == 0 && !(get_opcode_cpp(tc.instruction) == OPCODE_STORE)) ? 0 : tc.expected_rs2_data; // S-type uses rs2 field for data
+         if (get_opcode_cpp(tc.instruction) == OPCODE_STORE && top->o_rs2_data_d != tc.expected_rs2_data) { // Store (S-type) specific check for rs2_data
+            std::cout << "  FAIL: Rs2Data_D (Store). Exp: 0x" << std::hex << tc.expected_rs2_data << ", Got: 0x" << top->o_rs2_data_d << std::dec << std::endl;
+            current_pass = false;
+        } else if (get_opcode_cpp(tc.instruction) != OPCODE_STORE && top->o_rs2_data_d != expected_rs2_val) { // Non-store instructions
+            std::cout << "  FAIL: Rs2Data_D. Exp: 0x" << std::hex << expected_rs2_val << ", Got: 0x" << top->o_rs2_data_d << std::dec << std::endl;
+            current_pass = false;
+        }
+
+
+        if (top->o_imm_ext_d != tc.expected_imm_ext) {
+            std::cout << "  FAIL: ImmExt_D. Exp: 0x" << std::hex << tc.expected_imm_ext << ", Got: 0x" << top->o_imm_ext_d << std::dec << std::endl;
+            current_pass = false;
+        }
+        if (top->o_rs1_addr_d != tc.expected_rs1_addr) {
+            std::cout << "  FAIL: Rs1Addr_D. Exp: " << (int)tc.expected_rs1_addr << ", Got: " << (int)top->o_rs1_addr_d << std::endl;
+            current_pass = false;
+        }
+         if (top->o_rs2_addr_d != tc.expected_rs2_addr) {
+            std::cout << "  FAIL: Rs2Addr_D. Exp: " << (int)tc.expected_rs2_addr << ", Got: " << (int)top->o_rs2_addr_d << std::endl;
+            current_pass = false;
+        }
+        if (top->o_rd_addr_d != tc.expected_rd_addr) {
+            std::cout << "  FAIL: RdAddr_D. Exp: " << (int)tc.expected_rd_addr << ", Got: " << (int)top->o_rd_addr_d << std::endl;
+            current_pass = false;
+        }
+
+        if (current_pass) {
+            std::cout << "  PASS" << std::endl;
+            passed_count++;
+        } else {
+            std::cout << "  FAILED" << std::endl;
+        }
+    }
+
+    std::cout << "\nDecode Stage Testbench Finished. Passed " << passed_count << "/" << test_cases.size() << " detailed test cases." << std::endl;
+
+    if (tfp) tfp->close();
+    delete top;
+    return (passed_count == test_cases.size()) ? EXIT_SUCCESS : EXIT_FAILURE;
+}
 
 
 --- File: tests/unit/fetch_tb.sv ---

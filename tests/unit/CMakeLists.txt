@@ -52,3 +52,13 @@ add_verilator_test(
     ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
     ${CMAKE_SOURCE_DIR}/tests/unit/fetch_tb.sv
 )
+
+add_verilator_test(
+    decode_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/decode.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/decode_tb.sv
+)
