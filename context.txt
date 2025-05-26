@@ -1,0 +1,676 @@
+--- File: CMakeLists.txt ---
+cmake_minimum_required(VERSION 3.16)
+project(Verilog LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+
+find_program(PROJECT_VERILATOR_EXECUTABLE
+    NAMES verilator verilator_bin
+    DOC "Verilator executable"
+    REQUIRED
+)
+message(STATUS "Found system Verilator executable: ${PROJECT_VERILATOR_EXECUTABLE}")
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+add_subdirectory(tests)
+
+
+--- File: rtl/core/memory.sv ---
+
+
+
+--- File: rtl/core/execute.sv ---
+
+
+
+--- File: rtl/core/fetch.sv ---
+`include "common/defines.svh"
+
+module fetch (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Control signals from Hazard Unit / Execute Stage
+    input  logic                       stall_f,     // Stall PC and instruction fetch
+    input  logic                       pc_src_e,    // Selects PC source (PC+4 or branch/jump target)
+    input  logic [`DATA_WIDTH-1:0]     pc_target_e, // Branch/jump target address from EX stage
+
+    // Outputs to IF/ID pipeline register
+    output logic [`INSTR_WIDTH-1:0]    instr_f_o,
+    output logic [`DATA_WIDTH-1:0]     pc_plus_4_f_o,
+    output logic [`DATA_WIDTH-1:0]     pc_f_o          // Current PC fetched
+);
+
+    logic [`DATA_WIDTH-1:0] pc_reg;
+    logic [`DATA_WIDTH-1:0] pc_next;
+    logic [`DATA_WIDTH-1:0] pc_plus_4_temp;
+
+    // Instruction Memory instance
+    instruction_memory i_instr_mem (
+        .address     (pc_reg),
+        .instruction (instr_f_o)
+    );
+
+    // Adder for PC + 4
+    assign pc_plus_4_temp = pc_reg + 4;
+
+    // MUX for next PC selection
+    assign pc_next = pc_src_e ? pc_target_e : pc_plus_4_temp;
+
+    // PC Register
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pc_reg <= {`DATA_WIDTH{1'b0}}; // Reset PC to 0
+        end else if (!stall_f) begin // If not stalled, update PC
+            pc_reg <= pc_next;
+        end
+        // If stalled (stall_f = 1), PC holds its value
+    end
+
+    assign pc_plus_4_f_o = pc_plus_4_temp;
+    assign pc_f_o        = pc_reg; // Output current PC
+
+endmodule
+
+
+--- File: rtl/core/alu.sv ---
+`include "common/defines.svh"
+`include "common/alu_defines.svh"
+
+module alu (
+    input  logic [`DATA_WIDTH-1:0] operand_a,
+    input  logic [`DATA_WIDTH-1:0] operand_b,
+    input  logic [2:0]             alu_op_select,
+    input  logic                   alu_modifier,
+    output logic [`DATA_WIDTH-1:0] result,
+    output logic                   zero_flag
+);
+
+    logic [`DATA_WIDTH-1:0] result_comb;
+    logic [5:0]             shift_amount; // Для RV64, сдвиг на младшие 6 бит operand_b
+
+    assign shift_amount = operand_b[5:0];
+
+    always_comb begin
+        result_comb = {`DATA_WIDTH{1'bx}}; // Значение по умолчанию
+
+        case (alu_op_select)
+            `ALU_OP_ADD: result_comb = operand_a + operand_b;
+            `ALU_OP_SUB: result_comb = operand_a - operand_b;
+            `ALU_OP_AND: result_comb = operand_a & operand_b;
+            `ALU_OP_OR:  result_comb = operand_a | operand_b;
+            `ALU_OP_XOR: result_comb = operand_a ^ operand_b;
+            `ALU_OP_SLT_BASE:
+                if (alu_modifier == `ALU_SELECT_SIGNED) begin // SLT (signed)
+                    result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+                end else begin // alu_modifier == `ALU_SELECT_UNSIGNED` -> SLTU (unsigned)
+                    result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+                end
+            `ALU_OP_SLL: result_comb = operand_a << shift_amount;
+            `ALU_OP_SR_BASE:
+                if (alu_modifier == `ALU_SELECT_LOGICAL_SR) begin // SRL (logical)
+                    result_comb = operand_a >> shift_amount;
+                end else begin // alu_modifier == `ALU_SELECT_ARITH_SR` -> SRA (arithmetic)
+                    result_comb = $signed(operand_a) >>> shift_amount;
+                end
+            default: result_comb = {`DATA_WIDTH{1'bx}};
+        endcase
+    end
+
+    assign result = result_comb;
+    assign zero_flag = (result_comb == {`DATA_WIDTH{1'b0}});
+
+endmodule
+
+
+--- File: rtl/core/decode.sv ---
+
+
+
+--- File: rtl/core/writeback.sv ---
+
+
+
+--- File: rtl/core/pipeline_control.sv ---
+
+
+
+--- File: rtl/core/instruction_memory.sv ---
+`include "common/defines.svh"
+
+module instruction_memory (
+    input  logic [`DATA_WIDTH-1:0] address,
+    output logic [`INSTR_WIDTH-1:0] instruction
+);
+
+    localparam ROM_SIZE = 256; // Number of instructions
+    logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
+
+    // In a real scenario, this would be loaded from a file (e.g., $readmemh)
+    initial begin
+        for (int i = 0; i < ROM_SIZE; i++) begin
+            mem[i] = 32'h00000013; // NOP
+        end
+        // Add a few distinct instructions for testing later
+        mem[0] = 32'h00100093; // addi x1, x0, 1
+        mem[1] = 32'h00200113; // addi x2, x0, 2
+        // mem[2] = 32'h00008067; // jalr x0, x1, 0 (effectively a jump to x1 content)
+        //                        // This is a simplification; jalr needs rs1.
+        //                        // Let's use simpler instructions for now.
+        mem[2] = 32'h00308193; // addi x3, x1, 3
+        mem[3] = 32'h00110213; // addi x4, x2, 1
+    end
+
+    assign instruction = mem[address[`DATA_WIDTH-1:2]]; // Use PC[63:2] as index for 32-bit instructions
+
+endmodule
+
+
+--- File: rtl/core/if_id_register.sv ---
+`include "common/defines.svh"
+
+module if_id_register (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Control signals from Hazard Unit
+    input  logic stall_d, // Stall: keeps current values
+    input  logic flush_d, // Flush: clears register (outputs NOP-like values)
+
+    // Data inputs from Fetch Stage
+    input  logic [`INSTR_WIDTH-1:0] instr_f_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_plus_4_f_i,
+    input  logic [`DATA_WIDTH-1:0]  pc_f_i,          // Current PC from Fetch
+
+    // Data outputs to Decode Stage
+    output logic [`INSTR_WIDTH-1:0] instr_id_o,
+    output logic [`DATA_WIDTH-1:0]  pc_plus_4_id_o,
+    output logic [`DATA_WIDTH-1:0]  pc_id_o           // Current PC to Decode
+);
+
+    // NOP instruction (addi x0, x0, 0) for RISC-V
+    localparam NOP_INSTRUCTION = `INSTR_WIDTH'h00000013;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            instr_id_o     <= NOP_INSTRUCTION;
+            pc_plus_4_id_o <= {`DATA_WIDTH{1'b0}};
+            pc_id_o        <= {`DATA_WIDTH{1'b0}};
+        end else if (flush_d) begin
+            instr_id_o     <= NOP_INSTRUCTION; // Flush with NOP
+            pc_plus_4_id_o <= {`DATA_WIDTH{1'b0}}; // Or a defined "safe" PC+4
+            pc_id_o        <= {`DATA_WIDTH{1'b0}}; // Or a defined "safe" PC
+        end else if (!stall_d) begin // If not stalled and not flushed, pass inputs
+            instr_id_o     <= instr_f_i;
+            pc_plus_4_id_o <= pc_plus_4_f_i;
+            pc_id_o        <= pc_f_i;
+        end
+        // If stalled (stall_d = 1) and not flushed, register holds its value
+    end
+
+endmodule
+
+
+--- File: rtl/common/defines.svh ---
+`ifndef COMMON_DEFINES_SVH
+`define COMMON_DEFINES_SVH
+
+`define DATA_WIDTH 64
+`define INSTR_WIDTH 32
+`define REG_ADDR_WIDTH 5
+
+`endif
+
+
+--- File: rtl/common/alu_defines.svh ---
+`ifndef ALU_DEFINES_SVH
+`define ALU_DEFINES_SVH
+
+`define ALU_OP_ADD      3'b000
+`define ALU_OP_SUB      3'b001
+`define ALU_OP_AND      3'b010
+`define ALU_OP_OR       3'b011
+`define ALU_OP_XOR      3'b100
+`define ALU_OP_SLT_BASE 3'b101
+`define ALU_OP_SLL      3'b110
+`define ALU_OP_SR_BASE  3'b111
+
+`define ALU_SELECT_SIGNED       1'b0
+`define ALU_SELECT_UNSIGNED     1'b1
+
+`define ALU_SELECT_LOGICAL_SR   1'b0
+`define ALU_SELECT_ARITH_SR     1'b1
+
+`endif
+
+
+--- File: rtl/pipeline.sv ---
+
+
+
+--- File: tests/CMakeLists.txt ---
+add_custom_target(tests_full)
+add_subdirectory(unit)
+
+
+--- File: tests/unit/fetch_tb.cpp ---
+#include "Vfetch_tb.h"
+#include "verilated.h"
+#include "verilated_vcd_c.h"
+
+#include <iostream>
+#include <iomanip>
+#include <cstdint>
+#include <vector>
+
+// В defines.svh INSTR_WIDTH = 32, DATA_WIDTH = 64
+const uint32_t NOP_INSTRUCTION = 0x00000013;
+
+vluint64_t sim_time = 0;
+
+void tick(Vfetch_tb* dut, VerilatedVcdC* tfp) {
+    dut->clk = 0;
+    dut->eval();
+    if (tfp) tfp->dump(sim_time);
+    sim_time++;
+
+    dut->clk = 1;
+    dut->eval();
+    if (tfp) tfp->dump(sim_time);
+    sim_time++;
+}
+
+void reset_dut(Vfetch_tb* dut, VerilatedVcdC* tfp) {
+    dut->rst_n = 0;
+    // Initialize inputs to known safe values during reset
+    dut->i_stall_f = 0;
+    dut->i_pc_src_e = 0;
+    dut->i_pc_target_e = 0;
+    dut->i_stall_d = 0;
+    dut->i_flush_d = 0;
+    for (int i = 0; i < 5; ++i) { // Hold reset for a few cycles
+        tick(dut, tfp);
+    }
+    dut->rst_n = 1;
+    tick(dut, tfp); // One tick out of reset
+    std::cout << "DUT Reset" << std::endl;
+}
+
+
+int main(int argc, char** argv) {
+    Verilated::commandArgs(argc, argv);
+    Vfetch_tb* top = new Vfetch_tb;
+
+    Verilated::traceEverOn(true);
+    VerilatedVcdC* tfp = new VerilatedVcdC;
+    top->trace(tfp, 99);
+    tfp->open("tb_fetch.vcd");
+
+    std::cout << "Starting Fetch Stage Testbench" << std::endl;
+
+    reset_dut(top, tfp);
+
+    // Test Case 1: Basic sequential fetch
+    std::cout << "Test Case 1: Sequential Fetch" << std::endl;
+    top->i_stall_f = 0;
+    top->i_pc_src_e = 0;
+    top->i_pc_target_e = 0; // Don't care
+    top->i_stall_d = 0;
+    top->i_flush_d = 0;
+
+    // Cycle 1: PC=0, Fetch instr @0. IF/ID gets this after this cycle.
+    tick(top, tfp);
+    std::cout << "  PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected after reset and first tick: PC_F=0. IF/ID output still from reset state or previous garbage before first valid data.
+    // After PC=0 is fetched, on the NEXT rising edge, IF/ID will latch PC=0 and Instr @0.
+
+    // Cycle 2: PC=0 latched into IF/ID. Fetch stage moves to PC=4.
+    tick(top, tfp);
+    std::cout << "  PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=4. IF/ID PC=0, Instr = mem[0] (0x00100093)
+
+    // Cycle 3: PC=4 latched into IF/ID. Fetch stage moves to PC=8.
+    tick(top, tfp);
+    std::cout << "  PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=8. IF/ID PC=4, Instr = mem[1] (0x00200113)
+
+
+    // Test Case 2: Stall Fetch (StallF)
+    std::cout << "\nTest Case 2: Stall Fetch (stall_f)" << std::endl;
+    top->i_stall_f = 1; // Stall PC update
+    top->i_stall_d = 0; // IF/ID register loads normally
+    // PC_F was 8. It should remain 8. Instr_F will be from PC=8.
+    // IF/ID will latch current Instr_F and PC_F+4.
+    // Previous IF/ID instr was mem[1] (from PC=4).
+    tick(top, tfp); // PC=8 (stalled), instr_f = mem[8/4=2]. IF/ID gets (instr @ PC=8, PC=8+4)
+    std::cout << "  StallF=1. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=8. IF/ID PC=8, Instr = mem[2] (0x00308193)
+
+    tick(top, tfp); // PC=8 (still stalled), instr_f = mem[8/4=2]. IF/ID re-latches same values.
+    std::cout << "  StallF=1. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=8. IF/ID PC=8, Instr = mem[2]
+
+    top->i_stall_f = 0; // Release stall_f
+
+
+    // Test Case 3: Stall Decode (StallD)
+    std::cout << "\nTest Case 3: Stall Decode (stall_d)" << std::endl;
+    // PC_F was 8. Now stall_f=0, so PC will advance to 12. instr_f = mem[12/4=3].
+    // IF/ID was (PC=8, instr=mem[2]). Now stall_d=1, so IF/ID holds its value.
+    top->i_stall_d = 1;
+    tick(top, tfp);
+    std::cout << "  StallD=1. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=12 (0xC). IF/ID PC=8, Instr = mem[2] (holds previous)
+
+    // PC_F advances to 16. instr_f = mem[16/4=4].
+    // IF/ID still holds (PC=8, instr=mem[2]).
+    tick(top, tfp);
+    std::cout << "  StallD=1. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=16 (0x10). IF/ID PC=8, Instr = mem[2]
+
+    top->i_stall_d = 0; // Release stall_d
+
+
+    // Test Case 4: Flush Decode (FlushD)
+    std::cout << "\nTest Case 4: Flush Decode (flush_d)" << std::endl;
+    // PC_F was 16. Now stall_d=0, PC advances to 20. instr_f = mem[20/4=5].
+    // IF/ID was (PC=8, instr=mem[2]). Now flush_d=1. IF/ID should be NOP.
+    top->i_flush_d = 1;
+    tick(top, tfp);
+    std::cout << "  FlushD=1. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=20 (0x14). IF/ID PC=0, Instr = NOP (0x13)
+
+    top->i_flush_d = 0; // Release flush_d
+    tick(top, tfp); // PC_F advances to 24. IF/ID gets (instr @ PC=20, PC=20+4)
+    std::cout << "  FlushD=0. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=24 (0x18). IF/ID PC=20, Instr = mem[5]
+
+    // Test Case 5: Branch Taken (pc_src_e)
+    std::cout << "\nTest Case 5: Branch Taken" << std::endl;
+    top->i_pc_src_e = 1;
+    top->i_pc_target_e = 0x100; // Jump to address 0x100
+    // PC_F was 24. Next PC should be 0x100. instr_f will be mem[0x100/4].
+    // IF/ID was (PC=20, instr=mem[5]). IF/ID gets (instr @ PC=0x100, PC=0x100+4)
+    tick(top, tfp);
+    std::cout << "  Branch. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=0x100. IF/ID PC=0x100, Instr = mem[0x100/4] (which is NOP by default init)
+
+    top->i_pc_src_e = 0; // Next cycle, no branch
+    tick(top, tfp); // PC_F advances to 0x104. IF/ID gets (instr @ PC=0x100, PC=0x100+4)
+    std::cout << "  After Branch. PC_F: 0x" << std::hex << top->o_current_pc_f
+              << " -> IF/ID PC: 0x" << top->o_pc_id
+              << " Instr: 0x" << top->o_instr_id << std::dec << std::endl;
+    // Expected: PC_F=0x104. IF/ID PC=0x100, Instr = mem[0x100/4]
+
+
+    std::cout << "\nFetch Stage Testbench Finished." << std::endl;
+
+    if (tfp) tfp->close();
+    delete top;
+    return 0;
+}
+
+
+--- File: tests/unit/alu.cpp ---
+#include "Valu.h"
+#include "verilated.h"
+#include "verilated_vcd_c.h"
+
+#include <iostream>
+#include <iomanip>
+#include <cassert>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <bitset>
+
+const uint8_t ALU_OP_ADD      = 0b000;
+const uint8_t ALU_OP_SUB      = 0b001;
+const uint8_t ALU_OP_AND      = 0b010;
+const uint8_t ALU_OP_OR       = 0b011;
+const uint8_t ALU_OP_XOR      = 0b100;
+const uint8_t ALU_OP_SLT_BASE = 0b101;
+const uint8_t ALU_OP_SLL      = 0b110;
+const uint8_t ALU_OP_SR_BASE  = 0b111;
+
+const uint8_t ALU_SELECT_SIGNED     = 0;
+const uint8_t ALU_SELECT_UNSIGNED   = 1;
+const uint8_t ALU_SELECT_LOGICAL_SR = 0;
+const uint8_t ALU_SELECT_ARITH_SR   = 1;
+
+vluint64_t sim_time = 0;
+
+double sc_time_stamp() {
+    return sim_time;
+}
+
+void eval_alu(Valu* alu, VerilatedVcdC* tfp) {
+    alu->eval();
+    if (tfp) tfp->dump(sim_time);
+}
+
+struct AluTestCase {
+    uint64_t a, b;
+    uint8_t alu_op_sel;
+    uint8_t alu_mod;
+    uint64_t expected_res;
+    bool expected_zero;
+    // Убраны expected_cout и expected_ovf
+    std::string name;
+};
+
+int main(int argc, char** argv) {
+    Verilated::commandArgs(argc, argv);
+    Valu* top = new Valu;
+
+    Verilated::traceEverOn(true);
+    VerilatedVcdC* tfp = new VerilatedVcdC;
+    top->trace(tfp, 99);
+    tfp->open("tb_alu.vcd");
+
+    std::cout << "Starting Simplified ALU Testbench (RV64)" << std::endl;
+
+    AluTestCase tests[] = {
+        {5, 10, ALU_OP_ADD, 0, 15, false, "ADD 5+10"},
+        {0xFFFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0, 0, true, "ADD -1+1"},
+        {0x7FFFFFFFFFFFFFFFULL, 1, ALU_OP_ADD, 0, 0x8000000000000000ULL, false, "ADD signed ovf (MAX_POS+1)"}, // Результат все равно вычисляется
+
+        {10, 5, ALU_OP_SUB, 0, 5, false, "SUB 10-5"},
+        {5, 10, ALU_OP_SUB, 0, (uint64_t)-5, false, "SUB 5-10"},
+        {0x8000000000000000ULL, 1, ALU_OP_SUB, 0, 0x7FFFFFFFFFFFFFFFULL, false, "SUB signed ovf (MIN_NEG-1)"},
+        {10, 10, ALU_OP_SUB, 0, 0, true, "SUB 10-10 (zero)"},
+
+        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_AND, 0, 0x00ULL, true, "AND"},
+        {0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, ALU_OP_OR,  0, 0xFFFFFFFFFFFFFFFFULL, false, "OR"},
+        {0xFF00FF00FF00FF00ULL, 0x00FFFF00FFFF00FFULL, ALU_OP_XOR, 0, 0xFFFF000000FFFFFFULL, false, "XOR"},
+
+        {5, 10, ALU_OP_SLT_BASE, ALU_SELECT_SIGNED, 1, false, "SLT 5<10"},
+        {10, 5, ALU_OP_SLT_BASE, ALU_SELECT_SIGNED, 0, true, "SLT 10<5"},
+        {(uint64_t)-5, 2, ALU_OP_SLT_BASE, ALU_SELECT_SIGNED, 1, false, "SLT -5<2 (signed)"},
+
+        {5, 10, ALU_OP_SLT_BASE, ALU_SELECT_UNSIGNED, 1, false, "SLTU 5<10"},
+        {10, 5, ALU_OP_SLT_BASE, ALU_SELECT_UNSIGNED, 0, true, "SLTU 10<5"},
+        {(uint64_t)-5, 2, ALU_OP_SLT_BASE, ALU_SELECT_UNSIGNED, 0, true, "SLTU large_val<2 (unsigned)"},
+
+        {0x1ULL, 3, ALU_OP_SLL, 0, 0x8ULL, false, "SLL 1<<3 (val=3)"},
+        {0xABCDEF0123456789ULL, 64, ALU_OP_SLL, 0, 0xABCDEF0123456789ULL, false, "SLL by 64 (shamt=0)"},
+
+        {0x800000000000000FULL, 4, ALU_OP_SR_BASE, ALU_SELECT_LOGICAL_SR, 0x0800000000000000ULL, false, "SRL"},
+        {0x8000000000000000ULL, 1, ALU_OP_SR_BASE, ALU_SELECT_ARITH_SR,   0xC000000000000000ULL, false, "SRA neg"},
+        {0x4000000000000000ULL, 1, ALU_OP_SR_BASE, ALU_SELECT_ARITH_SR,   0x2000000000000000ULL, false, "SRA pos"}
+    };
+
+    int num_tests = sizeof(tests) / sizeof(AluTestCase);
+    int passed_tests = 0;
+
+    for (int i = 0; i < num_tests; ++i) {
+        AluTestCase& t = tests[i];
+
+        top->operand_a = t.a;
+        top->operand_b = t.b;
+        top->alu_op_select = t.alu_op_sel;
+        top->alu_modifier = t.alu_mod;
+
+        eval_alu(top, tfp);
+        sim_time++;
+
+        bool pass = (top->result == t.expected_res) &&
+                    (top->zero_flag == t.expected_zero);
+
+        if (pass) {
+            passed_tests++;
+        } else {
+            std::cout << "FAIL Test: " << t.name << std::endl;
+            std::cout << "  Input: A=0x" << std::hex << t.a << ", B=0x" << t.b
+                      << ", OpSel=" << std::bitset<3>(t.alu_op_sel) << ", Mod=" << (int)t.alu_mod << std::dec << std::endl;
+            std::cout << "  Got  : Res=0x" << std::hex << top->result << ", Zero=" << (int)top->zero_flag << std::dec << std::endl;
+            std::cout << "  Exp  : Res=0x" << std::hex << t.expected_res << ", Zero=" << (int)t.expected_zero << std::dec << std::endl;
+        }
+        assert(pass);
+    }
+
+    std::cout << "\nSimplified ALU Testbench Finished. Passed " << passed_tests << "/" << num_tests << " tests." << std::endl;
+
+    if (tfp) tfp->close();
+    delete top;
+    exit( (passed_tests == num_tests) ? EXIT_SUCCESS : EXIT_FAILURE );
+}
+
+
+--- File: tests/unit/CMakeLists.txt ---
+set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl)
+
+function(add_verilator_test module_name)
+    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_${module_name})
+    set(CPP_TESTBENCH_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${module_name}.cpp)
+
+    set(RTL_SOURCES "")
+    foreach(rtl_file ${ARGN})
+        list(APPEND RTL_SOURCES "${rtl_file}")
+    endforeach()
+
+    add_custom_target(build-unit-test-${module_name} ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
+        COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
+                -Wall --Wno-fatal --cc --exe --build --trace
+                --top-module ${module_name}
+                -I${RTL_INCLUDE_PATH}
+                ${RTL_SOURCES}
+                ${CPP_TESTBENCH_FILE}
+                --Mdir "${OBJ_DIR}"
+                -CFLAGS "-std=c++17 -Wall"
+        DEPENDS ${RTL_SOURCES} ${CPP_TESTBENCH_FILE}
+        COMMENT "Verilating and Building executable for ${module_name}"
+        VERBATIM
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    add_custom_target(run-unit-test-${module_name}
+        COMMAND "${OBJ_DIR}/V${module_name}"
+        DEPENDS "build-unit-test-${module_name}"
+        WORKING_DIRECTORY ${OBJ_DIR}
+        COMMENT "Running Verilated test for ${module_name}"
+        VERBATIM
+    )
+
+    if(TARGET tests_full)
+        add_dependencies(tests_full run-unit-test-${module_name})
+    endif()
+endfunction()
+
+
+add_verilator_test(
+    alu
+    ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
+)
+
+
+add_verilator_test(
+    fetch_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/fetch_tb.sv
+)
+
+
+--- File: tests/unit/fetch_tb.sv ---
+`include "common/defines.svh"
+
+module fetch_tb (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Inputs to control fetch stage behavior
+    input  logic                       i_stall_f,
+    input  logic                       i_pc_src_e,
+    input  logic [`DATA_WIDTH-1:0]     i_pc_target_e,
+    input  logic                       i_stall_d,
+    input  logic                       i_flush_d,
+
+    // Outputs from IF/ID register (to observe)
+    output logic [`INSTR_WIDTH-1:0]    o_instr_id,
+    output logic [`DATA_WIDTH-1:0]     o_pc_plus_4_id,
+    output logic [`DATA_WIDTH-1:0]     o_pc_id,
+    output logic [`DATA_WIDTH-1:0]     o_current_pc_f // For observing PC in fetch stage itself
+);
+
+    logic [`INSTR_WIDTH-1:0]    instr_f_val;
+    logic [`DATA_WIDTH-1:0]     pc_plus_4_f_val;
+    logic [`DATA_WIDTH-1:0]     pc_f_val;
+
+    fetch u_fetch (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .stall_f        (i_stall_f),
+        .pc_src_e       (i_pc_src_e),
+        .pc_target_e    (i_pc_target_e),
+        .instr_f_o      (instr_f_val),
+        .pc_plus_4_f_o  (pc_plus_4_f_val),
+        .pc_f_o         (pc_f_val)
+    );
+
+    if_id_register u_if_id_register (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .stall_d        (i_stall_d),
+        .flush_d        (i_flush_d),
+        .instr_f_i      (instr_f_val),
+        .pc_plus_4_f_i  (pc_plus_4_f_val),
+        .pc_f_i         (pc_f_val),
+        .instr_id_o     (o_instr_id),
+        .pc_plus_4_id_o (o_pc_plus_4_id),
+        .pc_id_o        (o_pc_id)
+    );
+
+    assign o_current_pc_f = pc_f_val;
+
+endmodule
+
+

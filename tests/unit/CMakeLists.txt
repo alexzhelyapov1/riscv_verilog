@@ -1,53 +1,54 @@
-function(add_verilator_test test_name)
-    set(VERILOG_MODULE_NAME ${test_name}) # Имя Verilog модуля и .sv файла (regfile, ram)
-    set(CPP_TESTBENCH_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${test_name}.cpp) # tests/unit/regfile.cpp
+set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl)
 
-    set(RTL_FILE ${CMAKE_SOURCE_DIR}/rtl/core/${VERILOG_MODULE_NAME}.sv)
-    set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl)
+function(add_verilator_test module_name)
+    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_${module_name})
+    set(CPP_TESTBENCH_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${module_name}.cpp)
 
-    # Директория, куда Verilator поместит свои объектные файлы и исполняемый файл теста
-    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_${test_name})
-    # Имя исполняемого файла, которое Verilator создаст (V<top_module_name>)
-    set(VERILATOR_GENERATED_EXE ${OBJ_DIR}/V${VERILOG_MODULE_NAME})
+    set(RTL_SOURCES "")
+    foreach(rtl_file ${ARGN})
+        list(APPEND RTL_SOURCES "${rtl_file}")
+    endforeach()
 
-    # Цель для сборки теста с помощью Verilator --exe --build
-    set(BUILD_TARGET_NAME ${test_name}_build_verilated_exe)
-    add_custom_target(${BUILD_TARGET_NAME} ALL
+    add_custom_target(build-unit-test-${module_name} ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
-        # Запускаем системный Verilator. VERILATOR_ROOT обычно не нужен.
-        COMMAND ${PROJECT_VERILATOR_EXECUTABLE} # Используем найденный системный Verilator
+        COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
                 -Wall --Wno-fatal --cc --exe --build --trace
-                # -j $(nproc) # Убираем для простоты и переносимости, make сам разберется
-                --top-module ${VERILOG_MODULE_NAME}
+                --top-module ${module_name}
                 -I${RTL_INCLUDE_PATH}
-                "${RTL_FILE}"
-                "${CPP_TESTBENCH_FILE}"
+                ${RTL_SOURCES}
+                ${CPP_TESTBENCH_FILE}
                 --Mdir "${OBJ_DIR}"
                 -CFLAGS "-std=c++17 -Wall"
-        DEPENDS ${RTL_FILE} ${CPP_TESTBENCH_FILE} # Зависит только от исходников
-        COMMENT "Verilating and Building executable for ${test_name} using system Verilator"
+        DEPENDS ${RTL_SOURCES} ${CPP_TESTBENCH_FILE}
+        COMMENT "Verilating and Building executable for ${module_name}"
         VERBATIM
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR} # Где будет запускаться команда verilator
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
 
-    # Цель для запуска скомпилированного теста
-    set(RUN_TARGET_NAME run_${test_name}_unittest)
-    add_custom_target(${RUN_TARGET_NAME}
-        COMMAND "${VERILATOR_GENERATED_EXE}"
-        DEPENDS ${BUILD_TARGET_NAME}
-        WORKING_DIRECTORY ${OBJ_DIR} # Запускаем из директории, где VCD может быть создан
-        COMMENT "Running Verilated test for ${test_name}"
+    add_custom_target(run-unit-test-${module_name}
+        COMMAND "${OBJ_DIR}/V${module_name}"
+        DEPENDS "build-unit-test-${module_name}"
+        WORKING_DIRECTORY ${OBJ_DIR}
+        COMMENT "Running Verilated test for ${module_name}"
         VERBATIM
     )
-
-    message(STATUS "Configured system Verilator test: ${test_name}")
-    message(STATUS "  Build target: ${BUILD_TARGET_NAME}")
-    message(STATUS "  Run target: ${RUN_TARGET_NAME}")
 
     if(TARGET tests_full)
-        add_dependencies(tests_full ${RUN_TARGET_NAME})
+        add_dependencies(tests_full run-unit-test-${module_name})
     endif()
 endfunction()
 
 
-add_verilator_test(alu)
+add_verilator_test(
+    alu
+    ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
+)
+
+
+add_verilator_test(
+    fetch_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/fetch_tb.sv
+)

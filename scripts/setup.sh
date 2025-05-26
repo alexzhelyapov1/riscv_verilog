@@ -14,4 +14,4 @@ fi
 
 sudo apt update
 sudo apt upgrade
-sudo apt install verilator
+sudo apt install -y verilator
