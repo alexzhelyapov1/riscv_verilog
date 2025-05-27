@@ -77,11 +77,11 @@ add_verilator_test(
 # Pipeline stages
 #----------------------------------------------------------------------------------------------------------------------
 
-
-
-#----------------------------------------------------------------------------------------------------------------------
-#----------------------------------------------------------------------------------------------------------------------
-
+add_verilator_test(
+    control_unit_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/control_unit_tb.sv
+)
 
 add_verilator_test(
     fetch_tb
@@ -109,3 +109,30 @@ add_verilator_test(
     # common defines are included via -I${RTL_INCLUDE_PATH}
     ${CMAKE_SOURCE_DIR}/tests/unit/execute_tb.sv # The Verilog testbench wrapper
 )
+
+add_verilator_test(
+    writeback_stage_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/writeback_stage_tb.sv
+)
+
+add_verilator_test(
+    memory_stage_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/memory_stage_tb.sv
+)
+
+#----------------------------------------------------------------------------------------------------------------------
+# Pipeline control
+#----------------------------------------------------------------------------------------------------------------------
+
+add_verilator_test(
+    pipeline_control_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/pipeline_control_tb.sv
+)
+
+#----------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------
+
