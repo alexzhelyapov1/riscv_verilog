@@ -22,6 +22,9 @@ module data_memory (
 
     // Byte-addressable memory array. Each element is a byte.
     logic [7:0] mem [MEM_SIZE_BYTES-1:0];
+    logic [`DATA_WIDTH-1:0] aligned_word_read;
+    logic [`DATA_WIDTH-1:0] temp_read_data;
+    logic [MEM_ADDR_BITS-1:3] word_addr_idx;
 
     // For faster simulation, Verilator might prefer word-oriented memory if operations are word-aligned
     // but byte-addressable is more general for LB/SB etc.
@@ -31,7 +34,7 @@ module data_memory (
     logic [`DATA_WIDTH-1:0] read_data_aligned;
     always_comb begin
         // Default to 'x' or 0 if address is out of bounds (not explicitly handled here for simplicity)
-        read_data_aligned = `DATA_WIDTH'('x);
+        read_data_aligned = `DATA_WIDTH'('0);
         if (addr_i < MEM_SIZE_BYTES) begin
             // Read a full 64-bit word aligned to 8 bytes for simplicity first
             // This assumes addr_i is mostly aligned for LW/LD. Unaligned access is complex.
@@ -48,21 +51,21 @@ module data_memory (
             // For simplicity, let's assume we read an aligned 64-bit word first, then extract.
             logic [`DATA_WIDTH-1:0] fetched_word;
             logic [2:0] byte_offset_in_word = addr_i[2:0]; // Lower 3 bits for byte offset within a 64-bit word
+            logic [MEM_ADDR_BITS-1:3] word_addr_idx;
 
             // Read the 8 bytes that form the 64-bit chunk containing addr_i
             // This is still a simplification, proper unaligned access over physical memory is hard
             for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
                 if ((addr_i + i) < MEM_SIZE_BYTES) begin
                     fetched_word[i*8 +: 8] = mem[addr_i + i];
-                end else {
-                    fetched_word[i*8 +: 8] = 8'hXX; // Out of bounds byte
-                }
+                end else begin
+                    fetched_word[i*8 +: 8] = 8'h00; // Out of bounds byte
+                end
             end
             // The above loop is not quite right for constructing the word based on addr_i alignment
             // Let's re-think: fetch the aligned word, then select based on offset and funct3.
-            logic [`DATA_WIDTH-1:0] aligned_word_read;
-            logic [`DATA_WIDTH-1:0] temp_read_data = `DATA_WIDTH'('x);
-            logic [MEM_ADDR_BITS-1:3] word_addr_idx = addr_i[`MEM_ADDR_BITS-1:3]; // Index for 64-bit words if mem was word array
+            temp_read_data = `DATA_WIDTH'('x);
+            word_addr_idx = addr_i[MEM_ADDR_BITS-1:3]; // Index for 64-bit words if mem was word array
 
             // More correct byte-wise construction for an aligned read:
             for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
@@ -70,7 +73,7 @@ module data_memory (
                 if (( (addr_i & ~(`DATA_WIDTH/8 - 1)) + i) < MEM_SIZE_BYTES) begin
                     aligned_word_read[(i*8) +: 8] = mem[(addr_i & ~(`DATA_WIDTH/8 - 1)) + i];
                 end else begin
-                    aligned_word_read[(i*8) +: 8] = 8'hXX;
+                    aligned_word_read[(i*8) +: 8] = 8'h00;
                 end
             end
 
@@ -148,7 +151,7 @@ module data_memory (
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (int i = 0; i < MEM_SIZE_BYTES; i++) begin
-                mem[i] <= 8'h00;
+                mem[i] = 8'h00;
             end
         end
     end

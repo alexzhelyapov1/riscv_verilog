@@ -39,10 +39,48 @@ function(add_verilator_test module_name)
 endfunction()
 
 
+#----------------------------------------------------------------------------------------------------------------------
+# Base components
+#----------------------------------------------------------------------------------------------------------------------
+
 add_verilator_test(
     alu
     ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
 )
+
+add_verilator_test(
+    instruction_memory_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/instruction_memory_tb.sv
+)
+
+add_verilator_test(
+    data_memory_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/data_memory_tb.sv
+)
+
+add_verilator_test(
+    register_file_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/register_file_tb.sv
+)
+
+add_verilator_test(
+    immediate_generator_tb
+    ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
+    ${CMAKE_SOURCE_DIR}/tests/unit/immediate_generator_tb.sv
+)
+
+
+#----------------------------------------------------------------------------------------------------------------------
+# Pipeline stages
+#----------------------------------------------------------------------------------------------------------------------
+
+
+
+#----------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------
 
 
 add_verilator_test(

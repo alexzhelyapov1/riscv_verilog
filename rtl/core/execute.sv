@@ -88,24 +88,18 @@ module execute (
     assign alu_operand_b_mux_out = alu_src_e_i ? imm_ext_e_i : rs2_data_e_i;
 
     // ALU Operand B Forwarding MUX
-// change start
     always_comb begin
-        case (forward_b_e_i)
-            2'b00:  alu_operand_b = alu_operand_b_mux_out;      // No forward, use data from ID/EX (RS2 or Imm)
-            2'b10:  alu_operand_b = forward_data_mem_i;       // Forward from MEM stage output
-            2'b01:  alu_operand_b = forward_data_wb_i;        // Forward from WB stage output
-            default: alu_operand_b = alu_operand_b_mux_out;   // Should not happen
-        endcase
-        // If alu_src_e_i is 1 (immediate for OpB), forwarding is not applicable to imm_ext_e_i.
-        // Forwarding only applies if OpB comes from a register (rs2_data_e_i).
-        // The Hazard Unit should set ForwardBE=00 if alu_src_e_i is 1.
-        // Or, this MUX logic can be conditional on alu_src_e_i.
-        if (alu_src_e_i) begin // If Operand B is immediate, no forwarding for it.
+        if (alu_src_e_i) begin // Operand B is Immediate
             alu_operand_b = imm_ext_e_i;
+        end else begin // Operand B is Register (rs2_data_e_i)
+            case (forward_b_e_i)
+                2'b00:  alu_operand_b = alu_operand_b_mux_out; // alu_operand_b_mux_out is rs2_data_e_i here
+                2'b10:  alu_operand_b = forward_data_mem_i;
+                2'b01:  alu_operand_b = forward_data_wb_i;
+                default: alu_operand_b = alu_operand_b_mux_out;
+            endcase
         end
-        // else alu_operand_b is determined by the case statement above.
     end
-// change end
 
     // ALU Instance (uses final operands after forwarding)
     alu u_alu (

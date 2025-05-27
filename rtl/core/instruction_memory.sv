@@ -23,6 +23,8 @@ module instruction_memory (
         mem[3] = 32'h00110213; // addi x4, x2, 1
     end
 
-    assign instruction = mem[address[`DATA_WIDTH-1:2]]; // Use PC[63:2] as index for 32-bit instructions
+    assign instruction = (address[`DATA_WIDTH-1:2] < ROM_SIZE) ?
+                     mem[address[`DATA_WIDTH-1:2]] :
+                     `INSTR_WIDTH'('0);
 
 endmodule

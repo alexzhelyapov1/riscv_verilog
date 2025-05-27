@@ -120,6 +120,9 @@ module pipeline (
     assign current_pc_debug = pc_f;
     assign fetched_instr_debug = instr_f;
 
+    logic [`DATA_WIDTH-1:0] data_from_mem_stage_for_fwd;
+    assign data_from_mem_stage_for_fwd = (result_src_m == 2'b01) ? read_data_w_mem_out : alu_result_m;
+
     // Instantiate Pipeline Stages and Registers
 
     // FETCH STAGE
@@ -241,7 +244,7 @@ module pipeline (
         .rs2_data_e_i   (rs2_data_e),
         .imm_ext_e_i    (imm_ext_e),
         .rd_addr_e_i    (rd_addr_e),
-        .forward_data_mem_i ( (result_src_m == 2'b01) ? read_data_wb : alu_result_m ), // Data from MEM output (alu_result_m or read_data_wb)
+        .forward_data_mem_i (data_from_mem_stage_for_fwd),
         .forward_data_wb_i  (result_w),         // Data from WB output (ResultW)
         .forward_a_e_i  (forward_a_e),      // From Hazard Unit
         .forward_b_e_i  (forward_b_e),      // From Hazard Unit
