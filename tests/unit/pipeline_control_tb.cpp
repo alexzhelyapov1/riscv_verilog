@@ -107,16 +107,16 @@ int main(int argc, char** argv) {
             3, 2, 3, false,RESULT_SRC_MEM_CPP, 4, false, 5, false, false, // RegWriteE = false
             false, false, false, false, FORWARD_NONE_CPP, FORWARD_NONE_CPP // No stall
         },
-        {"Not a Load in EX, rs1D == RdE (should forward, not stall)",
-            3, 2, 3, true, RESULT_SRC_ALU_CPP, // EX is ALU op to x3
-            4, false, 5, false, false,
-            false, false, false, false, FORWARD_EX_MEM_CPP /*Incorrect expectation: this is for RdM*/, FORWARD_NONE_CPP
-            // Corrected expectation: If RdE is from current EX, it's not ready for forwarding by this unit.
-            // This unit forwards from MEM and WB. If RdE is a hazard, it means previous cycle (now in MEM).
-            // So, for this case, we test forwarding from MEM stage.
-            // The test "EX/MEM Fwd A (RdM==Rs1D)" covers this. This specific case is redundant or needs clarification.
-            // For now, let's assume the test below handles this.
-        },
+        // {"Not a Load in EX, rs1D == RdE (should forward, not stall)",
+        //     3, 2, 3, true, RESULT_SRC_ALU_CPP, // EX is ALU op to x3
+        //     4, false, 5, false, false,
+        //     false, false, false, false, FORWARD_EX_MEM_CPP /*Incorrect expectation: this is for RdM*/, FORWARD_NONE_CPP
+        //     // Corrected expectation: If RdE is from current EX, it's not ready for forwarding by this unit.
+        //     // This unit forwards from MEM and WB. If RdE is a hazard, it means previous cycle (now in MEM).
+        //     // So, for this case, we test forwarding from MEM stage.
+        //     // The test "EX/MEM Fwd A (RdM==Rs1D)" covers this. This specific case is redundant or needs clarification.
+        //     // For now, let's assume the test below handles this.
+        // },
 
         // --- Data Forwarding from EX/MEM (RdM) ---
         {"EX/MEM Fwd A (RdM==Rs1D)",
