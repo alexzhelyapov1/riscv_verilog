@@ -24,7 +24,6 @@ module data_memory (
     logic [7:0] mem [MEM_SIZE_BYTES-1:0];
     logic [`DATA_WIDTH-1:0] aligned_word_read;
     logic [`DATA_WIDTH-1:0] temp_read_data;
-    logic [MEM_ADDR_BITS-1:3] word_addr_idx;
 
     // For faster simulation, Verilator might prefer word-oriented memory if operations are word-aligned
     // but byte-addressable is more general for LB/SB etc.
