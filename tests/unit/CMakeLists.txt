@@ -136,3 +136,26 @@ add_verilator_test(
 #----------------------------------------------------------------------------------------------------------------------
 #----------------------------------------------------------------------------------------------------------------------
 
+# add_verilator_test(
+#     pipeline_tb
+#     # All RTL core files are needed as they are instantiated within pipeline.sv
+#     # or its submodules. The -I path handles includes.
+#     ${CMAKE_SOURCE_DIR}/rtl/pipeline.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/if_id_register.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/decode.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/id_ex_register.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/ex_mem_register
+#     ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/mem_wb_register.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+#     ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv # Included by fetch
+#     ${CMAKE_SOURCE_DIR}/tests/unit/pipeline_tb.sv
+# )
