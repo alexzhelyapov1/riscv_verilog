@@ -246,6 +246,7 @@ int main(int argc, char** argv) {
         top->i_pc_plus_4_f = tc.pc_val + 4;
         top->i_if_id_stall_d = 0;
         top->i_if_id_flush_d = 0;
+        top->eval();
 
         // --- Clock Cycle 1 ---
         // Posedge: IF/ID register latches i_instr_f, i_pc_f, i_pc_plus_4_f.
