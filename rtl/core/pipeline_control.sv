@@ -77,90 +77,28 @@ module pipeline_control (
 
     // Forward for Operand A (rs1_addr_d_i)
     always_comb begin
-        forward_a_e_o = 2'b00; // Default: no forwarding
-        // EX/MEM to EX forwarding for OpA
-        if (reg_write_e_i && (rd_addr_e_i != 0) && (rd_addr_e_i == rs1_addr_d_i)) begin
-            forward_a_e_o = 2'b01; // Forward ALUResultM (or PC+4 if it was JAL/JALR)
-        end
-        // MEM/WB to EX forwarding for OpA (if not already forwarded from EX/MEM)
-        // And if rs1 is not x0
-        else if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs1_addr_d_i)) begin
-            forward_a_e_o = 2'b10; // Forward ResultW (from MEM/WB, could be ALURes or MemData)
-        end
-        // MEM/WB stage is one cycle later than EX/MEM stage
-        // The diagram P&H 7.61 shows forward from RdW as well, let's add that for completeness of the diagram.
-        // This would be for data available at the very end of MEM/WB, to be used by an instruction now in EX.
-        // This means data from an instruction that is TWO cycles ahead of the current EX instruction.
-        // This is typically handled by the MEM/WB forwarding (my case 2'b10).
-        // The diagram's logic:
-        // if ((Rs1E == RdM) & RegWriteM) & (Rs1E != 0)) then ForwardAE = 10
-        // else if ((Rs1E == RdW) & RegWriteW) & (Rs1E != 0)) then ForwardAE = 01
-        // This implies RdM path has priority over RdW. My logic above does this.
-        // The diagram uses 10 for RdM and 01 for RdW for ForwardAE. Let's match that.
-        // My `reg_write_e_i` / `rd_addr_e_i` are from ID/EX register, feeding into current EX stage.
-        // My `reg_write_m_i` / `rd_addr_m_i` are from EX/MEM register, feeding into current MEM stage.
-        // My `reg_write_w_i` / `rd_addr_w_i` are from MEM/WB register, feeding into current WB stage.
-
-        // Correcting based on typical P&H diagram forwarding paths:
-        // Path 1: ALU result from instruction in EX stage (now in MEM stage) to current EX stage
-        // Path 2: Data from instruction in MEM stage (now in WB stage) to current EX stage
-
-        // Source for ForwardAE = 01 is ALUResultM or ReadDataM from instruction in MEM stage
-        // Source for ForwardAE = 10 is ResultW from instruction in WB stage
-
-        // Re-evaluating my signal names vs diagram:
-        // My rs1_addr_d_i is Rs1D (or Rs1E on diagram if referring to inputs of EX's ALU).
-        // Let's use Rs1D, Rs2D for inputs to Hazard Unit from Decode outputs.
-        // RdE, RegWriteE are from ID/EX register (instr currently in EX).
-        // RdM, RegWriteM are from EX/MEM register (instr currently in MEM).
-        // RdW, RegWriteW are from MEM/WB register (instr currently in WB).
-
-        // Forwarding to current EX stage for operand Rs1D:
-        // Priority 1: Data from instruction finishing EX stage (now in EX/MEM reg)
-        // This is not directly shown as a separate forward path on the diagram for Rs1D/Rs2D,
-        // because the EX stage calculation itself isn't finished to be forwarded back to its own input.
-        // Forwarding is from *later* stages to an *earlier* stage's inputs.
-        // So, for an instruction currently in EX, we need data from instructions in MEM or WB.
-
-        // Forward from MEM stage to EX stage (for Rs1D)
-        // If instr in MEM writes to RdM, and RdM == Rs1D
-        if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs1_addr_d_i)) begin
-            forward_a_e_o = 2'b01; // Use value from end of MEM stage (ALUResultM or ReadDataM via MEM/WB reg)
-                                   // Diagram shows this as ForwardAE=10 (RdM path)
-        end
-        // Forward from WB stage to EX stage (for Rs1D), if not covered by MEM stage forward
-        else if (reg_write_w_i && (rd_addr_w_i != 0) && (rd_addr_w_i == rs1_addr_d_i)) begin
-            forward_a_e_o = 2'b10; // Use value from end of WB stage (ResultW)
-                                   // Diagram shows this as ForwardAE=01 (RdW path)
-        end
-        // Note: The encoding 01 vs 10 for MEM vs WB might be arbitrary, what matters is distinct values.
-        // I will use 01 for MEM->EX and 10 for WB->EX to make it different from the diagram if my interpretation is different.
-        // Let's stick to diagram: ForwardAE = 10 for (EX/MEM data -> EX input), ForwardAE = 01 for (MEM/WB data -> EX input)
-        // My 'reg_write_m_i' is from instruction currently IN memory stage (output of EX/MEM). So this is the EX/MEM -> EX path.
-        // My 'reg_write_w_i' is from instruction currently IN WB stage (output of MEM/WB). So this is the MEM/WB -> EX path.
-
-        // Re-assigning based on diagram's numbering for ForwardAE:
-        // RdM path (data from EX/MEM register, for instruction in MEM stage) has code 10
-        // RdW path (data from MEM/WB register, for instruction in WB stage) has code 01
         forward_a_e_o = 2'b00; // Default
+
+        // EX/MEM Hazard (data from instruction currently in MEM stage)
         if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs1_addr_d_i)) begin
-            forward_a_e_o = 2'b10; // Forward from MEM stage output (EX/MEM pipeline reg content)
+            forward_a_e_o = 2'b10; // P&H diagram code for RdM path
         end
+        // MEM/WB Hazard (data from instruction currently in WB stage)
+        // This path is taken only if the EX/MEM hazard doesn't apply to this rs1.
         else if (reg_write_w_i && (rd_addr_w_i != 0) && (rd_addr_w_i == rs1_addr_d_i)) begin
-            forward_a_e_o = 2'b01; // Forward from WB stage output (MEM/WB pipeline reg content)
+            forward_a_e_o = 2'b01; // P&H diagram code for RdW path
         end
     end
 
     // Forward for Operand B (rs2_addr_d_i)
     always_comb begin
-        forward_b_e_o = 2'b00; // Default: no forwarding
-        // Forward from MEM stage to EX stage (for Rs2D)
+        forward_b_e_o = 2'b00; // Default
+
         if (reg_write_m_i && (rd_addr_m_i != 0) && (rd_addr_m_i == rs2_addr_d_i)) begin
-            forward_b_e_o = 2'b10; // Forward from MEM stage output
+            forward_b_e_o = 2'b10;
         end
-        // Forward from WB stage to EX stage (for Rs2D), if not covered by MEM stage forward
         else if (reg_write_w_i && (rd_addr_w_i != 0) && (rd_addr_w_i == rs2_addr_d_i)) begin
-            forward_b_e_o = 2'b01; // Forward from WB stage output
+            forward_b_e_o = 2'b01;
         end
     end
 
