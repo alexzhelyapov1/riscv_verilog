@@ -1,16 +1,18 @@
 // rtl/core/fetch.sv
-`include "common/pipeline_types.svh" // Includes common/defines.svh indirectly
+`include "common/pipeline_types.svh"
 
-module fetch (
+module fetch #(
+    parameter string INSTR_MEM_INIT_FILE_PARAM = "", // Parameter for instruction memory init file
+    parameter logic [`DATA_WIDTH-1:0] PC_INIT_VALUE_PARAM = `PC_RESET_VALUE // Parameter for initial PC value
+)(
     input  logic clk,
     input  logic rst_n,
 
     // Control signals
     input  logic                       stall_f_i,
-    input  logic                       pc_src_e_i,         // From Execute: select PC source
-    input  logic [`DATA_WIDTH-1:0]     pc_target_e_i,      // From Execute: target address for branch/jump
+    input  logic                       pc_src_e_i,
+    input  logic [`DATA_WIDTH-1:0]     pc_target_e_i,
 
-    // Output to Decode (via pipeline register in top)
     output if_id_data_t                if_id_data_o
 );
 
@@ -19,8 +21,10 @@ module fetch (
     logic [`DATA_WIDTH-1:0] pc_plus_4_temp;
     logic [`INSTR_WIDTH-1:0] instr_mem_data;
 
-    instruction_memory i_instr_mem (
-        .address     (pc_reg), // Use current PC for fetch
+    instruction_memory #(
+        .MEM_INIT_FILE(INSTR_MEM_INIT_FILE_PARAM)
+    ) i_instr_mem (
+        .address     (pc_reg),
         .instruction (instr_mem_data)
     );
 
@@ -29,17 +33,14 @@ module fetch (
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pc_reg <= `PC_RESET_VALUE;
+            pc_reg <= PC_INIT_VALUE_PARAM; // Use parameterized reset value
         end else if (!stall_f_i) begin
             pc_reg <= pc_next;
         end
-        // If stall_f_i is asserted, pc_reg holds its value
     end
 
-    // Assign outputs for the current cycle
-    // These values will be latched by the IF/ID pipeline register in the main pipeline module
     assign if_id_data_o.instr      = instr_mem_data;
-    assign if_id_data_o.pc         = pc_reg;         // PC of the fetched instruction
-    assign if_id_data_o.pc_plus_4  = pc_plus_4_temp; // PC+4 of the fetched instruction
+    assign if_id_data_o.pc         = pc_reg;
+    assign if_id_data_o.pc_plus_4  = pc_plus_4_temp;
 
 endmodule

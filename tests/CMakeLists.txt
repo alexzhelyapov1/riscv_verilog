@@ -41,3 +41,11 @@ endfunction()
 
 add_custom_target(tests_full)
 add_subdirectory(unit)
+add_subdirectory(integration)
+
+# if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/integration/CMakeLists.txt)
+#     add_subdirectory(integration)
+#     if(TARGET tests_full AND TARGET run_all_integration_tests)
+#         add_dependencies(tests_full run_all_integration_tests)
+#     endif()
+# endif()

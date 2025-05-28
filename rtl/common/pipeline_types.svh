@@ -112,8 +112,8 @@ localparam id_ex_data_t NOP_ID_EX_DATA = '{
     op_a_sel:           ALU_A_SRC_RS1,
     pc_target_src_sel:  PC_TARGET_SRC_PC_PLUS_IMM,
     funct3:             3'b000,
-    pc:                 `DATA_WIDTH'(0),
-    pc_plus_4:          `DATA_WIDTH'(0),
+    pc:                 `PC_RESET_VALUE,
+    pc_plus_4:          `PC_RESET_VALUE + 4,
     rs1_data:           `DATA_WIDTH'(0),
     rs2_data:           `DATA_WIDTH'(0),
     imm_ext:            `DATA_WIDTH'(0),
@@ -129,7 +129,7 @@ localparam ex_mem_data_t NOP_EX_MEM_DATA = '{
     funct3:             3'b000,
     alu_result:         `DATA_WIDTH'(0),
     rs2_data:           `DATA_WIDTH'(0),
-    pc_plus_4:          `DATA_WIDTH'(0),
+    pc_plus_4:          `PC_RESET_VALUE + 4,
     rd_addr:            `REG_ADDR_WIDTH'(0)
 };
 
@@ -138,7 +138,7 @@ localparam mem_wb_data_t NOP_MEM_WB_DATA = '{
     result_src:         2'b00,
     read_data_mem:      `DATA_WIDTH'(0),
     alu_result:         `DATA_WIDTH'(0),
-    pc_plus_4:          `DATA_WIDTH'(0),
+    pc_plus_4:          `PC_RESET_VALUE + 4,
     rd_addr:            `REG_ADDR_WIDTH'(0)
 };
 

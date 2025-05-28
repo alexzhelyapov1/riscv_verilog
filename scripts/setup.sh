@@ -1,17 +1,25 @@
 #!/bin/bash
 
-cd $(dirname "$0")
+echo "Attempting to install Verilator and its dependencies..."
+echo "This script assumes you are on a Debian-based system (like Ubuntu) and have sudo privileges."
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root: sudo $0"
+# Обновить список пакетов
+sudo apt-get update
+
+# Установить Verilator и основные зависимости для сборки C++
+sudo apt-get install -y verilator g++ make git perl python3 autoconf flex bison ccache libfl-dev zlib1g-dev
+
+# Проверка установки
+if command -v verilator &> /dev/null
+then
+    echo "Verilator appears to be installed."
+    verilator --version
+else
+    echo "Verilator installation failed or Verilator is not in PATH."
+    echo "Please check the output above for errors."
     exit 1
 fi
 
-if ! command -v lsb_release >/dev/null || [ "$(lsb_release -is)" != "Ubuntu" ]; then
-    echo "[ERROR] This script for Ubuntu OS only."
-    exit 1
-fi
-
-sudo apt update
-sudo apt upgrade
-sudo apt install -y verilator
+echo "Dependency installation script finished."
+echo "Please re-run CMake configuration for your project."
+exit 0
