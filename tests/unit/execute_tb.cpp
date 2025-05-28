@@ -74,45 +74,17 @@ void eval_execute(Vexecute_tb* dut, VerilatedVcdC* tfp) {
 // Test case structure
 struct ExecuteTestCase {
     std::string name;
-    // --- Inputs to Execute Stage (simulating outputs of ID/EX register) ---
-    bool     reg_write_e_i;
-    uint8_t  result_src_e_i; // 00:ALU, 01:Mem, 10:PC+4
-    bool     mem_write_e_i;
-    bool     jump_e_i;
-    bool     branch_e_i;
-    bool     alu_src_e_i;     // For ALU OpB: 0=Reg_Rs2, 1=Imm
-    uint8_t  alu_control_e_i; // 4-bit ALU operation
-    uint8_t  funct3_e_i;      // 3-bit funct3 (from instruction, used for branches, memory ops)
-    AluASrcSelCppExTb op_a_sel_e_i;    // Selects original source for ALU OpA
-    PcTargetSrcSelCppExTb pc_target_src_sel_e_i; // Selects how PC_Target is calculated
-
-    uint64_t pc_e_i;
-    uint64_t pc_plus_4_e_i;
-    uint64_t rs1_data_e_i;    // Data from RF/forwarding for Rs1
-    uint64_t rs2_data_e_i;    // Data from RF/forwarding for Rs2
-    uint64_t imm_ext_e_i;     // Sign-extended immediate
-    uint8_t  rd_addr_e_i;     // Destination register address
-
-    // Forwarding inputs
-    uint64_t forward_data_mem_i; // Data from MEM stage (EX/MEM reg output) for forwarding
-    uint64_t forward_data_wb_i;  // Data from WB stage (MEM/WB reg output) for forwarding
-    uint8_t  forward_a_e_i;      // Control for OpA forwarding MUX
-    uint8_t  forward_b_e_i;      // Control for OpB forwarding MUX
+    // --- Inputs to Execute Stage ---
+    IdExDataTb      id_ex_data_in;    // Input structure
+    uint64_t        forward_data_mem_i;
+    uint64_t        forward_data_wb_i;
+    uint8_t         forward_a_e_i;
+    uint8_t         forward_b_e_i;
 
     // --- Expected Outputs from Execute Stage ---
-    // To EX/MEM Register
-    bool     exp_reg_write_m;
-    uint8_t  exp_result_src_m;
-    bool     exp_mem_write_m;
-    uint64_t exp_alu_result_m;
-    uint64_t exp_rs2_data_m;   // Original rs2_data_e_i value passed through
-    uint8_t  exp_rd_addr_m;
-    uint64_t exp_pc_plus_4_m;
-    uint8_t  exp_funct3_m;     // Pipelined funct3
-
-    // To PC Update Logic
-    bool     exp_pc_src_e;       // PCSrcE: 1 if branch/jump taken
-    uint64_t exp_pc_target_addr_e; // PCTargetE: target address
+    ExMemDataTb     exp_ex_mem_data_out; // Expected output structure
+    bool            exp_pc_src_e;
+    uint64_t        exp_pc_target_addr_e;
 };
 
 

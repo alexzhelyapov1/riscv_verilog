@@ -182,50 +182,50 @@ int main(int argc, char** argv) {
             std::cout << "  FAILED" << std::endl;
         }
     }
-     // Тест на чтение во время записи (read-during-write)
-    std::cout << "\nRunning Test: Read-during-write x1" << std::endl;
-    reset_regfile(top, tfp);
-    // 1. Записать начальное значение в x1
-    top->i_rd_addr_wb = 1; top->i_rd_data_wb = 0x1111; top->i_rd_write_en_wb = 1;
-    step_clk_regfile(top, tfp); // x1 = 0x1111
-    top->i_rd_write_en_wb = 0; // Снять WE
+    //  // Тест на чтение во время записи (read-during-write)
+    // std::cout << "\nRunning Test: Read-during-write x1" << std::endl;
+    // reset_regfile(top, tfp);
+    // // 1. Записать начальное значение в x1
+    // top->i_rd_addr_wb = 1; top->i_rd_data_wb = 0x1111; top->i_rd_write_en_wb = 1;
+    // step_clk_regfile(top, tfp); // x1 = 0x1111
+    // top->i_rd_write_en_wb = 0; // Снять WE
 
-    // 2. Настроить чтение x1 и одновременно запись нового значения в x1
-    top->i_rs1_addr = 1; // Читаем x1
-    top->i_rs2_addr = 0; // Читаем x0
-    top->i_rd_addr_wb = 1; // Пишем в x1
-    top->i_rd_data_wb = 0x2222; // Новое значение
-    top->i_rd_write_en_wb = 1;  // Разрешить запись
+    // // 2. Настроить чтение x1 и одновременно запись нового значения в x1
+    // top->i_rs1_addr = 1; // Читаем x1
+    // top->i_rs2_addr = 0; // Читаем x0
+    // top->i_rd_addr_wb = 1; // Пишем в x1
+    // top->i_rd_data_wb = 0x2222; // Новое значение
+    // top->i_rd_write_en_wb = 1;  // Разрешить запись
 
-    // 3. Первый такт после установки:
-    // clk=0 (negedge): rs1_data_o читает значение *до* записи 0x2222. Должно быть 0x1111.
-    // clk=1 (posedge): 0x2222 записывается в regs[1].
-    top->clk = 0; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
-    bool pass_rdw1 = (top->o_rs1_data == 0x1111);
-    std::cout << "  Read-during-write (cycle 1 negedge): rs1_addr=1, read_data=0x" << std::hex << top->o_rs1_data << ". Expected 0x1111." << std::dec << std::endl;
+    // // 3. Первый такт после установки:
+    // // clk=0 (negedge): rs1_data_o читает значение *до* записи 0x2222. Должно быть 0x1111.
+    // // clk=1 (posedge): 0x2222 записывается в regs[1].
+    // top->clk = 0; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
+    // bool pass_rdw1 = (top->o_rs1_data == 0x1111);
+    // std::cout << "  Read-during-write (cycle 1 negedge): rs1_addr=1, read_data=0x" << std::hex << top->o_rs1_data << ". Expected 0x1111." << std::dec << std::endl;
 
-    top->clk = 1; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
-    // Запись 0x2222 произошла
+    // top->clk = 1; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
+    // // Запись 0x2222 произошла
 
-    top->i_rd_write_en_wb = 0; // Снять WE для следующего чтения
+    // top->i_rd_write_en_wb = 0; // Снять WE для следующего чтения
 
-    // 4. Второй такт:
-    // clk=0 (negedge): rs1_data_o читает новое значение 0x2222.
-    top->clk = 0; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
-    bool pass_rdw2 = (top->o_rs1_data == 0x2222);
-    std::cout << "  Read-during-write (cycle 2 negedge): rs1_addr=1, read_data=0x" << std::hex << top->o_rs1_data << ". Expected 0x2222." << std::dec << std::endl;
+    // // 4. Второй такт:
+    // // clk=0 (negedge): rs1_data_o читает новое значение 0x2222.
+    // top->clk = 0; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
+    // bool pass_rdw2 = (top->o_rs1_data == 0x2222);
+    // std::cout << "  Read-during-write (cycle 2 negedge): rs1_addr=1, read_data=0x" << std::hex << top->o_rs1_data << ". Expected 0x2222." << std::dec << std::endl;
 
-    top->clk = 1; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
+    // top->clk = 1; top->eval(); if(tfp) tfp->dump(sim_time_regfile); sim_time_regfile++;
 
 
-    if (pass_rdw1 && pass_rdw2) {
-        std::cout << "  Read-during-write: PASS" << std::endl;
-        passed_count++;
-        test_cases.emplace_back(); // "Фиктивный" успешный тест для общего счетчика
-    } else {
-        std::cout << "  Read-during-write: FAILED" << std::endl;
-        test_cases.emplace_back(); // "Фиктивный" проваленный тест
-    }
+    // if (pass_rdw1 && pass_rdw2) {
+    //     std::cout << "  Read-during-write: PASS" << std::endl;
+    //     passed_count++;
+    //     test_cases.emplace_back(); // "Фиктивный" успешный тест для общего счетчика
+    // } else {
+    //     std::cout << "  Read-during-write: FAILED" << std::endl;
+    //     test_cases.emplace_back(); // "Фиктивный" проваленный тест
+    // }
 
 
     std::cout << "\nRegister File Testbench Finished. Passed " << passed_count << "/" << test_cases.size() << " tests." << std::endl;

@@ -1,30 +1,24 @@
-# tests/integration/CMakeLists.txt
-cmake_minimum_required(VERSION 3.16)
+# Файл: tests/integration/CMakeLists.txt
+cmake_minimum_required(VERSION 3.10)
 
-# Файл C++ тестбенча для конвейера (будет один для всех интеграционных тестов конвейера)
-set(PIPELINE_TB_CPP_FILE ${CMAKE_CURRENT_SOURCE_DIR}/pipeline_tb.cpp)
-
-# Проверка наличия скрипта конвертации
+set(PIPELINE_TEST_BENCH_CPP ${CMAKE_CURRENT_SOURCE_DIR}/pipeline_tb.cpp)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(ELF_TO_MEMH_SCRIPT ${CMAKE_SOURCE_DIR}/scripts/elf_to_memh.py)
 if(NOT EXISTS ${ELF_TO_MEMH_SCRIPT})
     message(FATAL_ERROR "Script elf_to_memh.py not found at ${ELF_TO_MEMH_SCRIPT}")
 endif()
 
-message(STATUS ${RISCV_AS})
-message(STATUS ${RISCV_LD})
-message(STATUS ${RISCV_OBJCOPY})
-message(STATUS ${RISCV_READELF})
+find_program(RISCV_AS NAMES riscv64-unknown-elf-as DOC "RISC-V Assembler")
+find_program(RISCV_LD NAMES riscv64-unknown-elf-ld DOC "RISC-V Linker")
+find_program(RISCV_OBJCOPY NAMES riscv64-unknown-elf-objcopy DOC "RISC-V Objcopy")
+find_program(RISCV_READELF NAMES riscv64-unknown-elf-readelf DOC "RISC-V Readelf")
 
-# Проверка наличия утилит тулчейна (уже должны быть найдены в корневом CMakeLists.txt)
 if(NOT RISCV_AS OR NOT RISCV_LD OR NOT RISCV_OBJCOPY OR NOT RISCV_READELF)
-    message(FATAL_ERROR "RISC-V toolchain utilities (AS, LD, OBJCOPY, READELF) not found by root CMake. Ensure they are in PATH or configure them.")
+    message(FATAL_ERROR "One or more RISC-V toolchain utilities not found.")
 endif()
 
-# --- Функция для добавления интеграционного теста конвейера ---
-function(add_pipeline_integration_test test_name asm_file_rel expected_rf_file_rel num_cycles pc_start_hex)
-    set(VERILOG_TOP_MODULE "pipeline") # Наш основной модуль конвейера
-
-    # Исходные RTL файлы для всего конвейера
+function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_rel_path num_cycles pc_start_hex_no_prefix)
+    set(VERILOG_MODULE_NAME "pipeline") # Top Verilog module for Verilation
     set(PIPELINE_RTL_FILES
         ${CMAKE_SOURCE_DIR}/rtl/pipeline.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
@@ -39,91 +33,88 @@ function(add_pipeline_integration_test test_name asm_file_rel expected_rf_file_r
         ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
+        # Common files are included via -I flag
     )
-    set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl) # Для `include "common/..."
+    set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl) # For common includes like common/defines.svh
+    set(TEST_CASE_INPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
+    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_pipeline_${test_case_name})
+    set(VERILATOR_GENERATED_EXE ${OBJ_DIR}/V${VERILOG_MODULE_NAME})
 
-    # Пути и имена файлов для конкретного теста
-    set(TEST_CASE_DIR ${CMAKE_CURRENT_SOURCE_DIR}) # Где лежат .s и .txt файлы
-    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_pipeline_${test_name})
-    set(VERILATOR_EXECUTABLE ${OBJ_DIR}/V${VERILOG_TOP_MODULE})
+    set(ASM_INPUT_FILE_FULL_PATH "${TEST_CASE_INPUT_PATH}/${asm_file_rel_path}")
+    set(ASM_OBJECT_FILE_IN_OBJDIR "${OBJ_DIR}/${test_case_name}.o")
+    set(LINKED_ELF_FILE_IN_OBJDIR "${OBJ_DIR}/${test_case_name}.elf")
+    # The VERILOG_HEX_MEM_FILENAME_FOR_PARAM is relative to the OBJ_DIR where Verilator runs
+    set(VERILOG_HEX_MEM_FILENAME_FOR_PARAM "${test_case_name}_instr_mem.hex")
+    set(GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR "${OBJ_DIR}/${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}")
 
-    set(ASM_FILE_FULL_PATH "${TEST_CASE_DIR}/${asm_file_rel}")
-    set(ASM_OBJECT_FILE "${OBJ_DIR}/${test_name}.o")
-    set(LINKED_ELF_FILE "${OBJ_DIR}/${test_name}.elf")
-    set(HEX_MEM_FILENAME_PARAM_VALUE "${test_name}_instr.hex") # Это будет передано в Verilog
-    set(GENERATED_HEX_MEM_FILE_FULL_PATH "${OBJ_DIR}/${HEX_MEM_FILENAME_PARAM_VALUE}")
-    set(EXPECTED_RF_FILE_FULL_PATH "${TEST_CASE_DIR}/${expected_rf_file_rel}")
+    set(VERILOG_PARAM_PC_START_ADDR "64'h${pc_start_hex_no_prefix}")
+    set(EXPECTED_WD3_FILE_FULL_PATH "${TEST_CASE_INPUT_PATH}/${expected_wd3_file_rel_path}")
+    # Parameter for data memory init file (if needed, pass to Verilator GDATA_MEM_INIT_FILE)
+    # For now, let's assume it's not used by default or handled by empty string in pipeline.sv
+    set(VERILOG_PARAM_DATA_MEM_INIT_FILE "") # Empty means default behavior in data_memory.sv
 
-    # Verilog параметры (значения для -G...)
-    set(VERILOG_PARAM_INSTR_MEM_FILE_DEF "-GINSTR_MEM_INIT_FILE=\"${HEX_MEM_FILENAME_PARAM_VALUE}\"") # Важно: кавычки для строки!
-    set(VERILOG_PARAM_PC_START_ADDR_DEF "-GPC_START_ADDR=64'h${pc_start_hex}")
-    # DATA_MEM_INIT_FILE пока не используем для простых тестов, но можно добавить
-    # set(VERILOG_PARAM_DATA_MEM_FILE_DEF "-GDATA_MEM_INIT_FILE=\"some_data.hex\"")
-
-
-    # C++ defines (для -D...)
-    set(FINAL_CXX_FLAGS "${CMAKE_CXX_FLAGS}") # Начальные флаги из CMake
-    list(APPEND FINAL_CXX_FLAGS "-DPIPELINE_TEST_NAME_STR_RAW=${test_name}")
-    list(APPEND FINAL_CXX_FLAGS "-DEXPECTED_RF_FILE_PATH_STR_RAW=${EXPECTED_RF_FILE_FULL_PATH}")
-    list(APPEND FINAL_CXX_FLAGS "-DNUM_CYCLES_TO_RUN=${num_cycles}")
-    string(REPLACE ";" " " FINAL_CXX_FLAGS_STR "${FINAL_CXX_FLAGS}") # Преобразовать список в строку
-
-    set(BUILD_TARGET_NAME build_pipeline_test_${test_name})
+    set(BUILD_TARGET_NAME ${test_case_name}_build_verilated_pipeline)
     add_custom_target(${BUILD_TARGET_NAME} ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
-        COMMAND ${RISCV_AS} -march=rv64i -mabi=lp64 -o ${ASM_OBJECT_FILE} ${ASM_FILE_FULL_PATH}
-            COMMENT "Assembling ${asm_file_rel}"
-        COMMAND ${RISCV_LD} --no-relax -Ttext=0x${pc_start_hex} -o ${LINKED_ELF_FILE} ${ASM_OBJECT_FILE}
-            COMMENT "Linking ${test_name}.o to ${test_name}.elf"
+        COMMAND ${RISCV_AS} -march=rv64i -mabi=lp64 -o ${ASM_OBJECT_FILE_IN_OBJDIR} ${ASM_INPUT_FILE_FULL_PATH}
+        COMMAND ${RISCV_LD} --no-relax -Ttext=0x${pc_start_hex_no_prefix} -o ${LINKED_ELF_FILE_IN_OBJDIR} ${ASM_OBJECT_FILE_IN_OBJDIR}
         COMMAND ${Python3_EXECUTABLE} "${ELF_TO_MEMH_SCRIPT}"
-                "${LINKED_ELF_FILE}"
-                "${GENERATED_HEX_MEM_FILE_FULL_PATH}"
+                "${LINKED_ELF_FILE_IN_OBJDIR}"
+                "${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}" # This is the output path for the hex file
                 --objcopy "${RISCV_OBJCOPY}" --readelf "${RISCV_READELF}" --section ".text" --wordsize 4
-            COMMENT "Converting ${test_name}.elf to ${HEX_MEM_FILENAME_PARAM_VALUE}"
+
         COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
                 -Wall --Wno-fatal --cc --exe --build --trace
-                --top-module ${VERILOG_TOP_MODULE}
-                -I${RTL_INCLUDE_PATH}
-                ${VERILOG_PARAM_INSTR_MEM_FILE_DEF}
-                ${VERILOG_PARAM_PC_START_ADDR_DEF}
+                --top-module ${VERILOG_MODULE_NAME}
+                -I${RTL_INCLUDE_PATH} # To find common/*.svh
+                # Parameters for the 'pipeline' module
+                "-GINSTR_MEM_INIT_FILE=\"${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}\"" # Name relative to OBJ_DIR
+                "-GPC_START_ADDR=${VERILOG_PARAM_PC_START_ADDR}"
+                "-GDATA_MEM_INIT_FILE=\"${VERILOG_PARAM_DATA_MEM_INIT_FILE}\"" # Pass data mem init file
+                ${PIPELINE_RTL_FILES} # All Verilog source files
+                "${PIPELINE_TEST_BENCH_CPP}" # The C++ testbench file
+                --Mdir "${OBJ_DIR}" # Output directory for Verilator artifacts
+                -CFLAGS "-std=c++17 -Wall \
+                    -DPIPELINE_TEST_CASE_NAME_STR_RAW=${test_case_name} \
+                    -DEXPECTED_WD3_FILE_PATH_STR_RAW=${EXPECTED_WD3_FILE_FULL_PATH} \
+                    -DNUM_CYCLES_TO_RUN=${num_cycles}"
+        DEPENDS "${PIPELINE_TEST_BENCH_CPP}" "${ASM_INPUT_FILE_FULL_PATH}"
+                "${EXPECTED_WD3_FILE_FULL_PATH}" "${ELF_TO_MEMH_SCRIPT}"
                 ${PIPELINE_RTL_FILES}
-                "${PIPELINE_TB_CPP_FILE}"
-                --Mdir "${OBJ_DIR}"
-                -CFLAGS "${FINAL_CXX_FLAGS_STR}" # Передаем объединенную строку флагов
-        DEPENDS ${PIPELINE_TB_CPP_FILE} ${ASM_FILE_FULL_PATH} ${EXPECTED_RF_FILE_FULL_PATH} ${ELF_TO_MEMH_SCRIPT} ${PIPELINE_RTL_FILES}
-        COMMENT "Verilating and Building pipeline for test: ${test_name}"
+        COMMENT "Building pipeline for test case: ${test_case_name}"
         VERBATIM
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
 
-    # Цель для запуска теста
-    set(RUN_TARGET_NAME run_pipeline_test_${test_name})
-    add_test(NAME ${test_name}_pipeline_integration COMMAND "${VERILATOR_EXECUTABLE}")
-    set_tests_properties(${test_name}_pipeline_integration PROPERTIES
-        WORKING_DIRECTORY ${OBJ_DIR} 
-        DEPENDS ${BUILD_TARGET_NAME}
-    )
+    set(RUN_TARGET_NAME run_${test_case_name}_pipeline_test)
     add_custom_target(${RUN_TARGET_NAME}
-        COMMAND "${VERILATOR_EXECUTABLE}"
+        COMMAND "${VERILATOR_GENERATED_EXE}"
         DEPENDS ${BUILD_TARGET_NAME}
-        WORKING_DIRECTORY ${OBJ_DIR}
-        COMMENT "Running pipeline test: ${test_name}"
+        WORKING_DIRECTORY ${OBJ_DIR} # Important: Verilator expects to find the .hex file here
+        COMMENT "Running pipeline test case: ${test_case_name}"
         VERBATIM
     )
 
-    if(TARGET run_all_integration_tests)
-        add_dependencies(run_all_integration_tests ${RUN_TARGET_NAME})
+    # Logic to add this test to a global 'run_all_pipeline_tests' target (if it exists)
+    if(NOT TARGET run_all_pipeline_tests)
+        add_custom_target(run_all_pipeline_tests COMMENT "Running all pipeline integration tests")
+    endif()
+    add_dependencies(run_all_pipeline_tests ${RUN_TARGET_NAME})
+
+    # Ensure tests_full depends on run_all_pipeline_tests
+    if(TARGET tests_full)
+         add_dependencies(tests_full run_all_pipeline_tests)
     endif()
 
-    message(STATUS "Configured pipeline integration test: ${test_name}")
+
+    message(STATUS "Configured pipeline test case: ${test_case_name}")
+    message(STATUS "  ASM file: ${ASM_INPUT_FILE_FULL_PATH}")
+    message(STATUS "  Expected output file: ${EXPECTED_WD3_FILE_FULL_PATH}")
+    message(STATUS "  Generated instruction hex file will be at: ${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}")
 endfunction()
 
-# Общая цель для запуска всех интеграционных тестов (можно будет добавить в CTest)
-add_custom_target(run_all_integration_tests)
-add_dependencies(tests_full run_all_integration_tests)
-
-# --- Определение конкретных тестов ---
-# add_pipeline_integration_test(<test_name> <asm_file> <expected_file> <num_cycles> <pc_start_hex_no_0x>)
-add_pipeline_integration_test(simple_addi "simple_addi.s" "simple_addi_expected_rf.txt" 15 "0")
-# Добавьте другие тесты здесь...
-# add_pipeline_integration_test(data_hazard_test "data_hazard.s" "data_hazard_expected.txt" 20 "100")
+# Existing test calls
+add_pipeline_test(addi_basic_asm "addi_basic_instr.s" "addi_basic_expected.txt" 12 "0")
+add_pipeline_test(jump_basic_asm "jump.s" "jump_expected.txt" 17 "0")
+# add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "10000")
+# add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "10000") # Needs DATA_MEM_INIT_FILE
+# add_pipeline_test(complex_asm "complex.s" "complex_expected.txt" 55 "10000")
