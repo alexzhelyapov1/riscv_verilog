@@ -22,7 +22,7 @@ module fetch #(
     logic [`INSTR_WIDTH-1:0] instr_mem_data;
 
     instruction_memory #(
-        .MEM_INIT_FILE(INSTR_MEM_INIT_FILE_PARAM)
+        .INSTR_MEM_INIT_FILE_PARAM(INSTR_MEM_INIT_FILE_PARAM)
     ) i_instr_mem (
         .address     (pc_reg),
         .instruction (instr_mem_data)

@@ -33,19 +33,6 @@ module fetch_tb (
         .pc_f_o         (pc_f_val)
     );
 
-    if_id_register u_if_id_register (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .stall_d        (i_stall_d),
-        .flush_d        (i_flush_d),
-        .instr_f_i      (instr_f_val),
-        .pc_plus_4_f_i  (pc_plus_4_f_val),
-        .pc_f_i         (pc_f_val),
-        .instr_id_o     (o_instr_id),
-        .pc_plus_4_id_o (o_pc_plus_4_id),
-        .pc_id_o        (o_pc_id)
-    );
-
     assign o_current_pc_f = pc_f_val;
 
 endmodule
