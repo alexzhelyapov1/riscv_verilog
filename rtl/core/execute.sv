@@ -28,6 +28,7 @@ module execute (
     logic [`DATA_WIDTH-1:0] alu_operand_a_final;
     logic [`DATA_WIDTH-1:0] alu_operand_b_mux_out;
     logic [`DATA_WIDTH-1:0] alu_operand_b_final;
+    logic [`DATA_WIDTH-1:0] write_data_e;
 
     logic [`DATA_WIDTH-1:0] alu_result_internal;
     logic                   alu_zero_flag_internal;
@@ -57,15 +58,16 @@ module execute (
 
     // ALU Operand B Forwarding
     always_comb begin
+        case (forward_b_e_i)
+            2'b00:  write_data_e = alu_operand_b_mux_out;    // No forward
+            2'b10:  write_data_e = forward_data_mem_i;       // Forward from EX/MEM stage (RdM)
+            2'b01:  write_data_e = forward_data_wb_i;        // Forward from MEM/WB stage (RdW)
+            default: write_data_e = alu_operand_b_mux_out;   // Should not happen
+        endcase
         if (id_ex_data_i.alu_src) begin // If Operand B is an Immediate, no forwarding
             alu_operand_b_final = id_ex_data_i.imm_ext;
-        end else begin // Operand B is from a register (rs2_data), forwarding might apply
-            case (forward_b_e_i)
-                2'b00:  alu_operand_b_final = alu_operand_b_mux_out;    // No forward
-                2'b10:  alu_operand_b_final = forward_data_mem_i;       // Forward from EX/MEM stage (RdM)
-                2'b01:  alu_operand_b_final = forward_data_wb_i;        // Forward from MEM/WB stage (RdW)
-                default: alu_operand_b_final = alu_operand_b_mux_out;   // Should not happen
-            endcase
+        end else begin
+            alu_operand_b_final = write_data_e;
         end
     end
 
@@ -117,7 +119,7 @@ module execute (
     assign ex_mem_data_o.mem_write  = id_ex_data_i.mem_write;
     assign ex_mem_data_o.funct3     = id_ex_data_i.funct3;      // Pass funct3 for Memory stage (load/store type)
     assign ex_mem_data_o.alu_result = alu_result_internal;      // Result of ALU operation
-    assign ex_mem_data_o.rs2_data   = id_ex_data_i.rs2_data;    // Original RS2 data (e.g., for Store instructions)
+    assign ex_mem_data_o.rs2_data   = write_data_e;    // Original RS2 data (e.g., for Store instructions)
     assign ex_mem_data_o.rd_addr    = id_ex_data_i.rd_addr;
     assign ex_mem_data_o.pc_plus_4  = id_ex_data_i.pc_plus_4;   // For JAL/JALR writeback
 

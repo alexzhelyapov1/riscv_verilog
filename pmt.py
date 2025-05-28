@@ -10,6 +10,7 @@ file_paths = [
     'rtl/common/pipeline_types.svh',
     'rtl/common/alu_defines.svh',
     'rtl/core/control_unit.sv',
+    'rtl/core/hazard_unit.sv',
     'rtl/core/alu.sv',
     'rtl/core/memory_stage.sv',
     'rtl/core/fetch.sv',
@@ -26,8 +27,12 @@ file_paths = [
     'tests/integration/addi_basic_expected.txt',
     'tests/integration/CMakeLists.txt',
     'tests/integration/addi_basic_instr.s',
+    'tests/integration/mem_expected.txt',
     'tests/integration/pipeline_tb.cpp',
+    'tests/integration/mem.s',
     'tests/integration/jump_expected.txt',
+    'tests/integration/beq.s',
+    'tests/integration/beq_expected.txt',
 ]
 
 # Имя выходного файла

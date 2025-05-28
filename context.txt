@@ -475,6 +475,96 @@ module control_unit (
 endmodule
 
 
+--- File: rtl/core/hazard_unit.sv ---
+// rtl/core/hazard_unit.sv
+`include "common/defines.svh"
+
+module hazard_unit (
+    // Inputs from ID/EX register values (current EX stage instruction)
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_ex_i,    // Rs1E from id_ex_data_q.rs1_addr
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_ex_i,    // Rs2E from id_ex_data_q.rs2_addr
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_ex_i,     // RdE from id_ex_data_q.rd_addr
+    input  logic                       result_src_ex0_i, // LSB of ResultSrc from id_ex_data_q.result_src[0] (1 if load)
+
+    // Inputs from instruction in ID stage (next EX stage instruction if not stalled/flushed)
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_i,    // Rs1D from decode.rs1_addr_d_o
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_i,    // Rs2D from decode.rs2_addr_d_o
+
+    // Inputs from EX/MEM register values
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_mem_i,     // RdM from ex_mem_data_q.rd_addr
+    input  logic                       reg_write_mem_i,   // RegWriteM from ex_mem_data_q.reg_write
+
+    // Inputs from MEM/WB register values
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,     // RdW from mem_wb_data_q.rd_addr
+    input  logic                       reg_write_wb_i,   // RegWriteW from mem_wb_data_q.reg_write
+
+    // Input from Execute stage output
+    input  logic                       pc_src_ex_i,       // PCSrcE from execute.pc_src_o
+
+    // Outputs for pipeline control
+    output logic [1:0]                 forward_a_ex_o,
+    output logic [1:0]                 forward_b_ex_o,
+    output logic                       stall_fetch_o,
+    output logic                       stall_decode_o,
+    output logic                       flush_decode_o,
+    output logic                       flush_execute_o
+);
+
+    logic lw_stall_internal;
+
+    always_comb begin
+        // Forwarding for Operand A in Execute Stage
+        // Priority: MEM stage hazard, then WB stage hazard
+        if (reg_write_mem_i && (rd_addr_mem_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_mem_i == rs1_addr_ex_i)) begin
+            forward_a_ex_o = 2'b10; // Forward from EX/MEM stage data path
+        end else if (reg_write_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_wb_i == rs1_addr_ex_i)) begin
+            forward_a_ex_o = 2'b01; // Forward from MEM/WB stage data path
+        end else begin
+            forward_a_ex_o = 2'b00; // No forwarding for Operand A
+        end
+
+        // Forwarding for Operand B in Execute Stage
+        // Priority: MEM stage hazard, then WB stage hazard
+        if (reg_write_mem_i && (rd_addr_mem_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_mem_i == rs2_addr_ex_i)) begin
+            forward_b_ex_o = 2'b10; // Forward from EX/MEM stage data path
+        end else if (reg_write_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_wb_i == rs2_addr_ex_i)) begin
+            forward_b_ex_o = 2'b01; // Forward from MEM/WB stage data path
+        end else begin
+            forward_b_ex_o = 2'b00; // No forwarding for Operand B
+        end
+
+        // Load-Use Stall detection (based on book's simpler logic)
+        // Stall if:
+        // 1. Instruction currently in EX stage (id_ex_data_q) is a load (result_src_ex0_i == 1'b1).
+        // 2. Its destination register (rd_addr_ex_i) is one of the source registers (rs1_addr_id_i or rs2_addr_id_i)
+        //    of the instruction currently in ID stage (if_id_data_q).
+        lw_stall_internal = result_src_ex0_i &&
+                            ( (rs1_addr_id_i == rd_addr_ex_i && rs1_addr_id_i != `REG_ADDR_WIDTH'(0) ) ||    // check rs1_addr_id_i is not x0
+                              (rs2_addr_id_i == rd_addr_ex_i && rs2_addr_id_i != `REG_ADDR_WIDTH'(0) ) );   // check rs2_addr_id_i is not x0
+        // Added checks for rsX_addr_id_i != 0 to prevent stalling if ID stage reads x0.
+        // The rd_addr_ex_i != 0 check is implicitly handled if rsX_addr_id_i matches and is not x0.
+        // If rd_addr_ex_i is x0, a load to x0 should not cause a stall if ID reads x0.
+        // If rd_addr_ex_i is x0, and ID reads a non-x0 register, no match, no stall.
+        // If rd_addr_ex_i is non-x0, and ID reads x0, no match, no stall.
+        // The condition `rd_addr_ex_i != 0` is also important for loads to x0.
+        // Let's refine: stall if load in EX writes to non-x0, and ID reads that non-x0.
+        lw_stall_internal = result_src_ex0_i && (rd_addr_ex_i != `REG_ADDR_WIDTH'(0)) &&
+                           ( (rs1_addr_id_i == rd_addr_ex_i) ||
+                             (rs2_addr_id_i == rd_addr_ex_i) );
+        // This version aligns with: stall if EX is load to actual reg (not x0), and ID reads that same reg.
+        // The check `rsX_addr_id_i != 0` is implicitly covered because if `rsX_addr_id_i == 0`, it cannot match `rd_addr_ex_i` (which is !=0).
+
+        stall_fetch_o  = lw_stall_internal; // Stall PC and IF/ID register fetch
+        stall_decode_o = lw_stall_internal; // Stall IF/ID register latch (prevents ID from getting new instr)
+
+        // Flush logic
+        flush_decode_o = pc_src_ex_i; // Flush instruction in Decode if branch/jump taken in EX
+        flush_execute_o = lw_stall_internal || pc_src_ex_i; // Flush instruction in Execute if load-use stall OR branch/jump taken
+    end
+
+endmodule
+
+
 --- File: rtl/core/alu.sv ---
 // rtl/core/alu.sv
 `include "common/defines.svh"
@@ -1280,12 +1370,11 @@ endmodule
 module pipeline #(
     parameter string INSTR_MEM_INIT_FILE = "",
     parameter logic [`DATA_WIDTH-1:0] PC_START_ADDR = `PC_RESET_VALUE,
-    parameter string DATA_MEM_INIT_FILE = "" // Added for data memory initialization
+    parameter string DATA_MEM_INIT_FILE = ""
 )(
     input  logic clk,
     input  logic rst_n,
 
-    // Optional debug outputs
     output logic [`DATA_WIDTH-1:0] debug_pc_f,
     output logic [`INSTR_WIDTH-1:0] debug_instr_f,
     output logic                   debug_reg_write_wb,
@@ -1293,7 +1382,6 @@ module pipeline #(
     output logic [`DATA_WIDTH-1:0] debug_result_w
 );
 
-    // Pipeline stage data registers (latches between stages)
     if_id_data_t    if_id_data_q, if_id_data_d;
     id_ex_data_t    id_ex_data_q, id_ex_data_d;
     ex_mem_data_t   ex_mem_data_q, ex_mem_data_d;
@@ -1307,10 +1395,17 @@ module pipeline #(
 
     logic                   pc_src_ex_o;
     logic [`DATA_WIDTH-1:0] pc_target_ex_o;
-    hazard_control_t        hazard_ctrl;
 
-    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_from_decode;
-    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_from_decode;
+    // Individual hazard control signals from hazard_unit
+    logic [1:0] forward_a_ex_signal;
+    logic [1:0] forward_b_ex_signal;
+    logic       stall_fetch_signal;
+    logic       stall_decode_signal;
+    logic       flush_decode_signal;
+    logic       flush_execute_signal;
+
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_signal; // from decode stage
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_signal; // from decode stage
 
     fetch #(
         .INSTR_MEM_INIT_FILE_PARAM(INSTR_MEM_INIT_FILE),
@@ -1318,7 +1413,7 @@ module pipeline #(
     ) u_fetch (
         .clk                (clk),
         .rst_n              (rst_n),
-        .stall_f_i          (hazard_ctrl.stall_f),
+        .stall_f_i          (stall_fetch_signal), // Connect to hazard unit output
         .pc_src_e_i         (pc_src_ex_o),
         .pc_target_e_i      (pc_target_ex_o),
         .if_id_data_o       (if_id_data_from_fetch)
@@ -1330,22 +1425,21 @@ module pipeline #(
         .if_id_data_i       (if_id_data_q),
         .writeback_data_i   (rf_write_data_from_wb),
         .id_ex_data_o       (id_ex_data_from_decode),
-        .rs1_addr_d_o       (rs1_addr_from_decode),
-        .rs2_addr_d_o       (rs2_addr_from_decode)
+        .rs1_addr_d_o       (rs1_addr_id_signal), // Output for hazard unit
+        .rs2_addr_d_o       (rs2_addr_id_signal)  // Output for hazard unit
     );
 
     execute u_execute (
         .id_ex_data_i       (id_ex_data_q),
         .forward_data_mem_i (ex_mem_data_q.alu_result),
         .forward_data_wb_i  (rf_write_data_from_wb.result_to_rf),
-        .forward_a_e_i      (hazard_ctrl.forward_a_e),
-        .forward_b_e_i      (hazard_ctrl.forward_b_e),
+        .forward_a_e_i      (forward_a_ex_signal), // Connect to hazard unit output
+        .forward_b_e_i      (forward_b_ex_signal), // Connect to hazard unit output
         .ex_mem_data_o      (ex_mem_data_from_execute),
         .pc_src_o           (pc_src_ex_o),
         .pc_target_addr_o   (pc_target_ex_o)
     );
 
-    // Pass DATA_MEM_INIT_FILE to memory_stage
     memory_stage #(
         .DATA_MEM_INIT_FILE_PARAM(DATA_MEM_INIT_FILE)
     ) u_memory_stage (
@@ -1360,35 +1454,45 @@ module pipeline #(
         .rf_write_data_o    (rf_write_data_from_wb)
     );
 
-    pipeline_control u_pipeline_control (
-        .if_id_data_i       (if_id_data_q),
-        .id_ex_data_i       (id_ex_data_q),
-        .ex_mem_data_i      (ex_mem_data_q),
-        .mem_wb_data_i      (mem_wb_data_q),
-        .pc_src_from_ex_i   (pc_src_ex_o),
-        .hazard_ctrl_o      (hazard_ctrl)
+    // Instantiate new hazard_unit
+    hazard_unit u_hazard_unit (
+        .rs1_addr_ex_i    (id_ex_data_q.rs1_addr),
+        .rs2_addr_ex_i    (id_ex_data_q.rs2_addr),
+        .rd_addr_ex_i     (id_ex_data_q.rd_addr),
+        .result_src_ex0_i (id_ex_data_q.result_src[0]),
+
+        .rs1_addr_id_i    (rs1_addr_id_signal),
+        .rs2_addr_id_i    (rs2_addr_id_signal),
+
+        .rd_addr_mem_i    (ex_mem_data_q.rd_addr),
+        .reg_write_mem_i  (ex_mem_data_q.reg_write),
+
+        .rd_addr_wb_i     (mem_wb_data_q.rd_addr),
+        .reg_write_wb_i   (mem_wb_data_q.reg_write),
+
+        .pc_src_ex_i      (pc_src_ex_o),
+
+        .forward_a_ex_o   (forward_a_ex_signal),
+        .forward_b_ex_o   (forward_b_ex_signal),
+        .stall_fetch_o    (stall_fetch_signal),
+        .stall_decode_o   (stall_decode_signal),
+        .flush_decode_o   (flush_decode_signal),
+        .flush_execute_o  (flush_execute_signal)
     );
 
-    // Pipeline register logic (same as before)
     // IF/ID Register Logic
     always_comb begin
-        if (hazard_ctrl.flush_d) begin
+        if (flush_decode_signal) begin // Use signal from hazard_unit
             if_id_data_d = NOP_IF_ID_DATA;
-            // Если flush, PC в NOP должен быть "разумным", NOP_IF_ID_DATA.pc уже PC_RESET_VALUE
-            // Если PC_START_ADDR != PC_RESET_VALUE, то NOP_IF_ID_DATA.pc может быть не тем, что мы хотим для PC_START_ADDR
-            // Однако, pc_reg в fetch уже инициализирован PC_START_ADDR.
-            // if_id_data_from_fetch.pc будет PC_START_ADDR на первом такте.
-        end else if (hazard_ctrl.stall_d) begin
-            if_id_data_d = if_id_data_q;
+        end else if (stall_decode_signal) begin // Use signal from hazard_unit
+            if_id_data_d = if_id_data_q; // Keep current data
         end else begin
-            if_id_data_d = if_id_data_from_fetch;
+            if_id_data_d = if_id_data_from_fetch; // Latch new data
         end
     end
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            if_id_data_q <= NOP_IF_ID_DATA; // NOP_IF_ID_DATA.pc == PC_RESET_VALUE
-            // Явно установим PC поля, если PC_START_ADDR отличается от PC_RESET_VALUE
-            // или если хотим гарантировать PC_START_ADDR при сбросе этого регистра
+            if_id_data_q <= NOP_IF_ID_DATA;
             if_id_data_q.pc <= PC_START_ADDR;
             if_id_data_q.pc_plus_4 <= PC_START_ADDR + 4;
         end else begin
@@ -1398,8 +1502,8 @@ module pipeline #(
 
     // ID/EX Register Logic
     always_comb begin
-        if (hazard_ctrl.flush_e) begin
-            id_ex_data_d = NOP_ID_EX_DATA; // NOP_ID_EX_DATA.pc == PC_RESET_VALUE
+        if (flush_execute_signal) begin // Use signal from hazard_unit
+            id_ex_data_d = NOP_ID_EX_DATA;
         end else begin
             id_ex_data_d = id_ex_data_from_decode;
         end
@@ -1407,8 +1511,7 @@ module pipeline #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             id_ex_data_q <= NOP_ID_EX_DATA;
-            // Аналогично для ID/EX
-            id_ex_data_q.pc <= PC_START_ADDR; // PC инструкции, которая была бы здесь при сбросе
+            id_ex_data_q.pc <= PC_START_ADDR;
             id_ex_data_q.pc_plus_4 <= PC_START_ADDR + 4;
         end else begin
             id_ex_data_q <= id_ex_data_d;
@@ -1420,9 +1523,9 @@ module pipeline #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ex_mem_data_q <= NOP_EX_MEM_DATA;
-            // PC поля в NOP_EX_MEM_DATA также могут нуждаться в PC_START_ADDR
-            // ex_mem_data_q.pc_plus_4 <= PC_START_ADDR + 4; // Если pc_plus_4 хранится и здесь
         end else begin
+            // EX/MEM register is not flushed by typical hazard conditions like load-use or branch.
+            // It latches the (potentially NOP'd) output from ID/EX.
             ex_mem_data_q <= ex_mem_data_d;
         end
     end
@@ -1432,14 +1535,13 @@ module pipeline #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             mem_wb_data_q <= NOP_MEM_WB_DATA;
-            // mem_wb_data_q.pc_plus_4 <= PC_START_ADDR + 4; // Если pc_plus_4 хранится и здесь
         end else begin
             mem_wb_data_q <= mem_wb_data_d;
         end
     end
 
-    assign debug_pc_f         = if_id_data_from_fetch.pc;
-    assign debug_instr_f      = if_id_data_from_fetch.instr;
+    assign debug_pc_f         = if_id_data_from_fetch.pc; // or if_id_data_q.pc depending on what you want to see
+    assign debug_instr_f      = if_id_data_from_fetch.instr; // or if_id_data_q.instr
     assign debug_reg_write_wb = rf_write_data_from_wb.reg_write_en;
     assign debug_rd_addr_wb   = rf_write_data_from_wb.rd_addr;
     assign debug_result_w     = rf_write_data_from_wb.result_to_rf;
@@ -1456,7 +1558,7 @@ _start:
 loop:
     addi x1, x1, 1
     jal x4, loop
-    nop
+    addi x3, x0, 7
     nop
     nop
     nop
@@ -1517,7 +1619,8 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
         ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+        # ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+        ${CMAKE_SOURCE_DIR}/rtl/core/hazard_unit.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
@@ -1606,8 +1709,8 @@ endfunction()
 # Existing test calls
 add_pipeline_test(addi_basic_asm "addi_basic_instr.s" "addi_basic_expected.txt" 12 "0")
 add_pipeline_test(jump_basic_asm "jump.s" "jump_expected.txt" 17 "0")
-# add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "10000")
-# add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "10000") # Needs DATA_MEM_INIT_FILE
+add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "0")
+add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "0") # Needs DATA_MEM_INIT_FILE
 # add_pipeline_test(complex_asm "complex.s" "complex_expected.txt" 55 "10000")
 
 
@@ -1635,6 +1738,21 @@ _start:
     nop
     nop
     nop
+
+
+--- File: tests/integration/mem_expected.txt ---
+x
+0000000000000000
+0000000000000007
+x
+0000000000000007
+0000000000000000
+0000000000000000
+0000000000000000
+0000000000000000
+0000000000000000
+0000000000000000
+0000000000000000
 
 
 --- File: tests/integration/pipeline_tb.cpp ---
@@ -1832,6 +1950,33 @@ int main(int argc, char** argv) {
 }
 
 
+--- File: tests/integration/mem.s ---
+.section .text
+.global _start
+
+_start:
+    addi x1, x0, 7
+    sd x1, 0x10(x0)
+    ld x2, 0x10(x0)
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+
+
 --- File: tests/integration/jump_expected.txt ---
 x
 0000000000000000
@@ -1839,17 +1984,73 @@ x
 0000000000000002
 000000000000000c
 x
-x
+0000000000000000
 0000000000000003
 000000000000000c
 x
-x
+0000000000000000
 0000000000000004
 000000000000000c
 x
-x
-0000000000000004
+0000000000000000
+0000000000000005
 000000000000000c
+x
+0000000000000000
+
+
+--- File: tests/integration/beq.s ---
+.section .text
+.global _start
+
+_start:
+    addi x1, x0, 1
+    addi x2, x0, 5
+    addi x3, x0, 5
+loop:
+    addi x1, x1, 1
+    beq x2, x3, loop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+
+
+--- File: tests/integration/beq_expected.txt ---
+x
+0000000000000000
+0000000000000001
+0000000000000005
+0000000000000005
+0000000000000002
+x
+x
+0000000000000000
+0000000000000003
+x
+x
+0000000000000000
+0000000000000004
+x
+x
+0000000000000000
+0000000000000005
+x
+x
+0000000000000000
+0000000000000006
+x
 x
 x
 
