@@ -1,2 +1,44 @@
+set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl)
+
+function(add_verilator_test module_name)
+    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_${module_name})
+    set(CPP_TESTBENCH_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${module_name}.cpp)
+
+    set(RTL_SOURCES "")
+    foreach(rtl_file ${ARGN})
+        list(APPEND RTL_SOURCES "${rtl_file}")
+    endforeach()
+
+    add_custom_target(build-unit-test-${module_name} ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
+        COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
+                -Wall --Wno-fatal --cc --exe --build --trace
+                --top-module ${module_name}
+                -I${RTL_INCLUDE_PATH}
+                ${RTL_SOURCES}
+                ${CPP_TESTBENCH_FILE}
+                --Mdir "${OBJ_DIR}"
+                -CFLAGS "-std=c++17 -Wall"
+        DEPENDS ${RTL_SOURCES} ${CPP_TESTBENCH_FILE}
+        COMMENT "Verilating and Building executable for ${module_name}"
+        VERBATIM
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    add_custom_target(run-unit-test-${module_name}
+        COMMAND "${OBJ_DIR}/V${module_name}"
+        DEPENDS "build-unit-test-${module_name}"
+        WORKING_DIRECTORY ${OBJ_DIR}
+        COMMENT "Running Verilated test for ${module_name}"
+        VERBATIM
+    )
+
+    if(TARGET tests_full)
+        add_dependencies(tests_full run-unit-test-${module_name})
+    endif()
+endfunction()
+
+
 add_custom_target(tests_full)
 add_subdirectory(unit)
+add_subdirectory(integration)
