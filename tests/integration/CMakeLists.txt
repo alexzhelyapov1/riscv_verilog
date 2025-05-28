@@ -26,7 +26,8 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
         ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+        # ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+        ${CMAKE_SOURCE_DIR}/rtl/core/hazard_unit.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
