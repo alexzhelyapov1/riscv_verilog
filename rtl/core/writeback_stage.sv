@@ -1,32 +1,29 @@
-// rtl/core/writeback.sv
-`include "common/defines.svh"
+// rtl/core/writeback_stage.sv
+`include "common/pipeline_types.svh"
 
-module writeback_stage ( // Renamed to writeback_stage for clarity
-    // Inputs from MEM/WB Register
-    input  logic [1:0] result_src_wb_i,   // Selects the source for writeback data
+module writeback_stage (
+    // Input from Memory (latched by MEM/WB register in pipeline.sv)
+    input  mem_wb_data_t           mem_wb_data_i,
 
-    input  logic [`DATA_WIDTH-1:0]     read_data_wb_i,  // Data read from memory
-    input  logic [`DATA_WIDTH-1:0]     alu_result_wb_i, // Result from ALU
-    input  logic [`DATA_WIDTH-1:0]     pc_plus_4_wb_i,  // PC+4 for JAL/JALR
-
-    // Outputs that go to the Register File's write port
-    // (These will be connected to register_file instance in the top pipeline module)
-    output logic [`DATA_WIDTH-1:0]     result_w_o       // Data to be written to register file
+    // Output to Register File write port (directly connected in pipeline.sv)
+    output rf_write_data_t         rf_write_data_o
 );
+
+    logic [`DATA_WIDTH-1:0] result_selected_for_rf;
 
     // MUX to select the data to be written back to the register file
     always_comb begin
-        case (result_src_wb_i)
-            2'b00:  result_w_o = alu_result_wb_i;    // Result from ALU
-            2'b01:  result_w_o = read_data_wb_i;     // Data from memory
-            2'b10:  result_w_o = pc_plus_4_wb_i;     // PC+4 for JAL/JALR
-            default: result_w_o = `DATA_WIDTH'('x); // Should not happen with valid control
+        case (mem_wb_data_i.result_src)
+            2'b00:  result_selected_for_rf = mem_wb_data_i.alu_result;    // Result from ALU
+            2'b01:  result_selected_for_rf = mem_wb_data_i.read_data_mem; // Data from memory
+            2'b10:  result_selected_for_rf = mem_wb_data_i.pc_plus_4;     // PC+4 for JAL/JALR
+            default: result_selected_for_rf = `DATA_WIDTH'('x); // Should not happen
         endcase
     end
 
-    // The following signals are also part of the Writeback "stage" conceptually,
-    // but they are passed directly from MEM/WB to the register file in the top module:
-    // - reg_write_wb_i (from MEM/WB) -> to register_file.rd_write_en_wb_i
-    // - rd_addr_wb_i   (from MEM/WB) -> to register_file.rd_addr_wb_i
+    // Assign outputs for the register file write data structure
+    assign rf_write_data_o.reg_write_en = mem_wb_data_i.reg_write;
+    assign rf_write_data_o.rd_addr      = mem_wb_data_i.rd_addr;
+    assign rf_write_data_o.result_to_rf = result_selected_for_rf;
 
 endmodule
