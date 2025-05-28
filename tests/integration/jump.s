@@ -6,7 +6,7 @@ _start:
 loop:
     addi x1, x1, 1
     jal x4, loop
-    nop
+    addi x3, x0, 7
     nop
     nop
     nop
