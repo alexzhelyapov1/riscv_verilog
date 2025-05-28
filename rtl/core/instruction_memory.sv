@@ -1,3 +1,4 @@
+// rtl/core/instruction_memory.sv
 `include "common/defines.svh"
 
 module instruction_memory (
@@ -12,26 +13,23 @@ module instruction_memory (
     initial begin
         // Default initialize all memory to NOP
         for (int i = 0; i < ROM_SIZE; i++) begin
-            mem[i] = 32'h00000013; // NOP: addi x0, x0, 0
+            mem[i] = `NOP_INSTRUCTION;
         end
 
-        if (MEM_INIT_FILE != "") begin
-            // If a file is specified, load it. This will override NOPs.
-            $readmemh(MEM_INIT_FILE, mem);
-            // $display("Instruction memory initialized from %s", MEM_INIT_FILE);
-        end else begin
-            // Fallback to hardcoded test instructions if no file is provided
-            // These will override the NOPs at specific locations.
+        // if (MEM_INIT_FILE != "") begin
+        //     $readmemh(MEM_INIT_FILE, mem);
+        // end else begin
+            // Hardcoded test instructions for basic pipeline test
             mem[0] = 32'h00100093; // addi x1, x0, 1
             mem[1] = 32'h00200113; // addi x2, x0, 2
-            mem[2] = 32'h00308193; // addi x3, x1, 3
-            mem[3] = 32'h00110213; // addi x4, x2, 1
-            // $display("Instruction memory initialized with default test program.");
-        end
+            mem[2] = 32'h00300193; // addi x3, x0, 3 (rd=x3)
+            mem[3] = 32'h00400213; // addi x4, x0, 4 (rd=x4)
+            // $display("Instruction memory initialized with basic addi test program.");
+        // end
     end
 
     assign instruction = (address[`DATA_WIDTH-1:2] < ROM_SIZE) ?
                      mem[address[`DATA_WIDTH-1:2]] :
-                     `INSTR_WIDTH'('h00000013); // Return NOP for out-of-bounds access
+                     `NOP_INSTRUCTION; // Return NOP for out-of-bounds access
 
 endmodule

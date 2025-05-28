@@ -2,7 +2,9 @@
 `include "common/defines.svh"
 `include "common/riscv_opcodes.svh" // For FUNCT3 defines (LB, LH, LW, etc.)
 
-module data_memory (
+module data_memory #(
+    parameter string DATA_MEM_INIT_FILE = "" // This parameter must exist
+)(
     input  logic clk,
     input  logic rst_n,
 

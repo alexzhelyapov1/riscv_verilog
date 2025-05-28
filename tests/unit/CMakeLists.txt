@@ -94,3 +94,22 @@ add_verilator_test(
 #----------------------------------------------------------------------------------------------------------------------
 #----------------------------------------------------------------------------------------------------------------------
 
+add_verilator_test(
+    pipeline_tb
+    # RTL files for the entire pipeline
+    ${CMAKE_SOURCE_DIR}/rtl/pipeline.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/decode.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
+    ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
+    # The Verilog testbench wrapper
+    ${CMAKE_SOURCE_DIR}/tests/unit/pipeline_tb.sv
+)
