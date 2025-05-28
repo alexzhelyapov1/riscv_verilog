@@ -116,6 +116,6 @@ endfunction()
 # Existing test calls
 add_pipeline_test(addi_basic_asm "addi_basic_instr.s" "addi_basic_expected.txt" 12 "0")
 add_pipeline_test(jump_basic_asm "jump.s" "jump_expected.txt" 17 "0")
-# add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "10000")
-# add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "10000") # Needs DATA_MEM_INIT_FILE
+add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "0")
+add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "0") # Needs DATA_MEM_INIT_FILE
 # add_pipeline_test(complex_asm "complex.s" "complex_expected.txt" 55 "10000")
