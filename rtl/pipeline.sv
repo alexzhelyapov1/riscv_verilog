@@ -1,4 +1,3 @@
-// rtl/pipeline.sv
 `default_nettype none
 `timescale 1ns/1ps
 
@@ -33,7 +32,7 @@ module pipeline #(
     logic                   pc_src_ex_o;
     logic [`DATA_WIDTH-1:0] pc_target_ex_o;
 
-    // Individual hazard control signals from hazard_unit
+    // For hazard_unit
     logic [1:0] forward_a_ex_signal;
     logic [1:0] forward_b_ex_signal;
     logic       stall_fetch_signal;
@@ -41,8 +40,8 @@ module pipeline #(
     logic       flush_decode_signal;
     logic       flush_execute_signal;
 
-    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_signal; // from decode stage
-    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_signal; // from decode stage
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_signal;
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_signal;
 
     fetch #(
         .INSTR_MEM_INIT_FILE_PARAM(INSTR_MEM_INIT_FILE),
@@ -50,7 +49,7 @@ module pipeline #(
     ) u_fetch (
         .clk                (clk),
         .rst_n              (rst_n),
-        .stall_f_i          (stall_fetch_signal), // Connect to hazard unit output
+        .stall_f_i          (stall_fetch_signal),
         .pc_src_e_i         (pc_src_ex_o),
         .pc_target_e_i      (pc_target_ex_o),
         .if_id_data_o       (if_id_data_from_fetch)
@@ -62,16 +61,16 @@ module pipeline #(
         .if_id_data_i       (if_id_data_q),
         .writeback_data_i   (rf_write_data_from_wb),
         .id_ex_data_o       (id_ex_data_from_decode),
-        .rs1_addr_d_o       (rs1_addr_id_signal), // Output for hazard unit
-        .rs2_addr_d_o       (rs2_addr_id_signal)  // Output for hazard unit
+        .rs1_addr_d_o       (rs1_addr_id_signal),
+        .rs2_addr_d_o       (rs2_addr_id_signal)
     );
 
     execute u_execute (
         .id_ex_data_i       (id_ex_data_q),
         .forward_data_mem_i (ex_mem_data_q.alu_result),
         .forward_data_wb_i  (rf_write_data_from_wb.result_to_rf),
-        .forward_a_e_i      (forward_a_ex_signal), // Connect to hazard unit output
-        .forward_b_e_i      (forward_b_ex_signal), // Connect to hazard unit output
+        .forward_a_e_i      (forward_a_ex_signal),
+        .forward_b_e_i      (forward_b_ex_signal),
         .ex_mem_data_o      (ex_mem_data_from_execute),
         .pc_src_o           (pc_src_ex_o),
         .pc_target_addr_o   (pc_target_ex_o)
@@ -91,7 +90,6 @@ module pipeline #(
         .rf_write_data_o    (rf_write_data_from_wb)
     );
 
-    // Instantiate new hazard_unit
     hazard_unit u_hazard_unit (
         .rs1_addr_ex_i    (id_ex_data_q.rs1_addr),
         .rs2_addr_ex_i    (id_ex_data_q.rs2_addr),
@@ -119,9 +117,9 @@ module pipeline #(
 
     // IF/ID Register Logic
     always_comb begin
-        if (flush_decode_signal) begin // Use signal from hazard_unit
+        if (flush_decode_signal) begin
             if_id_data_d = NOP_IF_ID_DATA;
-        end else if (stall_decode_signal) begin // Use signal from hazard_unit
+        end else if (stall_decode_signal) begin
             if_id_data_d = if_id_data_q; // Keep current data
         end else begin
             if_id_data_d = if_id_data_from_fetch; // Latch new data
@@ -139,7 +137,7 @@ module pipeline #(
 
     // ID/EX Register Logic
     always_comb begin
-        if (flush_execute_signal) begin // Use signal from hazard_unit
+        if (flush_execute_signal) begin
             id_ex_data_d = NOP_ID_EX_DATA;
         end else begin
             id_ex_data_d = id_ex_data_from_decode;
@@ -161,8 +159,6 @@ module pipeline #(
         if (!rst_n) begin
             ex_mem_data_q <= NOP_EX_MEM_DATA;
         end else begin
-            // EX/MEM register is not flushed by typical hazard conditions like load-use or branch.
-            // It latches the (potentially NOP'd) output from ID/EX.
             ex_mem_data_q <= ex_mem_data_d;
         end
     end
@@ -177,8 +173,8 @@ module pipeline #(
         end
     end
 
-    assign debug_pc_f         = if_id_data_from_fetch.pc; // or if_id_data_q.pc depending on what you want to see
-    assign debug_instr_f      = if_id_data_from_fetch.instr; // or if_id_data_q.instr
+    assign debug_pc_f         = if_id_data_from_fetch.pc;
+    assign debug_instr_f      = if_id_data_from_fetch.instr;
     assign debug_reg_write_wb = rf_write_data_from_wb.reg_write_en;
     assign debug_rd_addr_wb   = rf_write_data_from_wb.rd_addr;
     assign debug_result_w     = rf_write_data_from_wb.result_to_rf;

@@ -5,15 +5,14 @@ module instruction_memory (
     output logic [`INSTR_WIDTH-1:0] instruction
 );
 
-    parameter string INSTR_MEM_INIT_FILE_PARAM = ""; // Parameter for memory initialization file
-    localparam ROM_SIZE = 2**20; // Number of instructions (1,048,576)
-    localparam ROM_ADDR_WIDTH = $clog2(ROM_SIZE); // Width of the index for mem (20 bits)
+    parameter string INSTR_MEM_INIT_FILE_PARAM = "";
+    localparam ROM_SIZE = 2**20;
+    localparam ROM_ADDR_WIDTH = $clog2(ROM_SIZE);
 
     logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
     logic [ROM_ADDR_WIDTH-1:0] mem_idx;
 
     initial begin
-        // Default initialize all memory to NOP
         for (int i = 0; i < ROM_SIZE; i++) begin
             mem[i] = `NOP_INSTRUCTION;
         end

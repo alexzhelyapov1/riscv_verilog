@@ -7,7 +7,7 @@ echo "This script assumes you are on a Debian-based system (like Ubuntu) and hav
 sudo apt-get update
 
 # Установить Verilator и основные зависимости для сборки C++
-sudo apt-get install -y verilator g++ make git perl python3 autoconf flex bison ccache libfl-dev zlib1g-dev
+sudo apt-get install -y verilator
 
 # Проверка установки
 if command -v verilator &> /dev/null

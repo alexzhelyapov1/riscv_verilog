@@ -1,3 +1,84 @@
+--- File: rtl/common/control_signals_defines.svh ---
+`ifndef CONTROL_SIGNALS_DEFINES_SVH
+`define CONTROL_SIGNALS_DEFINES_SVH
+
+
+typedef enum logic [1:0] {
+    ALU_A_SRC_RS1,
+    ALU_A_SRC_PC,
+    ALU_A_SRC_ZERO
+} alu_a_src_sel_e;
+
+typedef enum logic [0:0] {
+    PC_TARGET_SRC_PC_PLUS_IMM,
+    PC_TARGET_SRC_ALU_JALR
+} pc_target_src_sel_e;
+
+
+`endif
+
+
+--- File: rtl/common/riscv_opcodes.svh ---
+`ifndef RISCV_OPCODES_SVH
+`define RISCV_OPCODES_SVH
+
+`define OPCODE_LUI        7'b0110111
+`define OPCODE_AUIPC      7'b0010111
+`define OPCODE_JAL        7'b1101111
+`define OPCODE_JALR       7'b1100111
+`define OPCODE_BRANCH     7'b1100011
+`define OPCODE_LOAD       7'b0000011
+`define OPCODE_STORE      7'b0100011
+`define OPCODE_OP_IMM   7'b0010011
+`define OPCODE_OP         7'b0110011
+`define OPCODE_MISC_MEM 7'b0001111
+`define OPCODE_SYSTEM     7'b1110011
+
+`define FUNCT3_ADDI       3'b000
+`define FUNCT3_ADD_SUB    3'b000
+`define FUNCT3_SLLI       3'b001
+`define FUNCT3_SLL        3'b001
+`define FUNCT3_SLTI       3'b010
+`define FUNCT3_SLT        3'b010
+`define FUNCT3_SLTIU      3'b011
+`define FUNCT3_SLTU       3'b011
+`define FUNCT3_XORI       3'b100
+`define FUNCT3_XOR        3'b100
+`define FUNCT3_SRLI_SRAI  3'b101
+`define FUNCT3_SRL_SRA    3'b101
+`define FUNCT3_ORI        3'b110
+`define FUNCT3_OR         3'b110
+`define FUNCT3_ANDI       3'b111
+`define FUNCT3_AND        3'b111
+
+`define FUNCT3_BEQ        3'b000
+`define FUNCT3_BNE        3'b001
+`define FUNCT3_BLT        3'b100
+`define FUNCT3_BGE        3'b101
+`define FUNCT3_BLTU       3'b110
+`define FUNCT3_BGEU       3'b111
+
+`define FUNCT3_LB         3'b000
+`define FUNCT3_LH         3'b001
+`define FUNCT3_LW         3'b010
+`define FUNCT3_LD         3'b011
+`define FUNCT3_LBU        3'b100
+`define FUNCT3_LHU        3'b101
+`define FUNCT3_LWU        3'b110
+
+`define FUNCT3_SB         3'b000
+`define FUNCT3_SH         3'b001
+`define FUNCT3_SW         3'b010
+`define FUNCT3_SD         3'b011
+
+`define FUNCT3_JALR       3'b000
+`define FUNCT7_5_SUB_ALT  1'b1
+`define FUNCT7_5_ADD_MAIN 1'b0
+
+
+`endif
+
+
 --- File: rtl/common/defines.svh ---
 `ifndef COMMON_DEFINES_SVH
 `define COMMON_DEFINES_SVH
@@ -5,34 +86,30 @@
 `define DATA_WIDTH 64
 `define INSTR_WIDTH 32
 `define REG_ADDR_WIDTH 5
-`define PC_RESET_VALUE 64'h00000000 // Standard PC reset value
-`define NOP_INSTRUCTION 32'h00000013 // addi x0, x0, 0
+`define PC_RESET_VALUE 64'h00000000
+`define NOP_INSTRUCTION 32'h00000013
 
 `endif
 
 
---- File: rtl/common/alu_defines.svh ---
-`ifndef ALU_DEFINES_SVH
-`define ALU_DEFINES_SVH
+--- File: rtl/common/immediate_types.svh ---
+`ifndef IMMEDIATE_TYPES_SVH
+`define IMMEDIATE_TYPES_SVH
 
-`define ALU_CONTROL_WIDTH 4
-
-`define ALU_OP_ADD  4'b0000 // Addition
-`define ALU_OP_SUB  4'b0001 // Subtraction
-`define ALU_OP_SLL  4'b0010 // Shift Left Logical
-`define ALU_OP_SLT  4'b0011 // Set Less Than (Signed)
-`define ALU_OP_SLTU 4'b0100 // Set Less Than (Unsigned)
-`define ALU_OP_XOR  4'b0101 // XOR
-`define ALU_OP_SRL  4'b0110 // Shift Right Logical
-`define ALU_OP_SRA  4'b0111 // Shift Right Arithmetic
-`define ALU_OP_OR   4'b1000 // OR
-`define ALU_OP_AND  4'b1001 // AND
+typedef enum logic [2:0] {
+    IMM_TYPE_NONE, // For R-type or when immediate is not used by ALU operand B or for address calculation
+    IMM_TYPE_I,    // I-type (ADDI, LW, JALR)
+    IMM_TYPE_S,    // S-type (SW)
+    IMM_TYPE_B,    // B-type (Branches)
+    IMM_TYPE_U,    // U-type (LUI, AUIPC)
+    IMM_TYPE_J,     // J-type (JAL)
+    IMM_TYPE_ISHIFT // SLLI, SRLI, SRAI
+} immediate_type_e;
 
 `endif
 
 
 --- File: rtl/common/pipeline_types.svh ---
-// common/pipeline_types.svh
 `ifndef PIPELINE_TYPES_SVH
 `define PIPELINE_TYPES_SVH
 
@@ -41,73 +118,59 @@
 `include "common/control_signals_defines.svh"
 `include "common/immediate_types.svh"
 
-// Data from Fetch to Decode
 typedef struct packed {
     logic [`INSTR_WIDTH-1:0]    instr;
     logic [`DATA_WIDTH-1:0]     pc;
     logic [`DATA_WIDTH-1:0]     pc_plus_4;
 } if_id_data_t;
 
-// Data from Decode to Execute
 typedef struct packed {
-    // Control Signals
     logic                       reg_write;
-    logic [1:0]                 result_src; // 00:ALU, 01:MemRead, 10:PC+4
+    logic [1:0]                 result_src;
     logic                       mem_write;
     logic                       jump;
     logic                       branch;
-    logic                       alu_src;    // Selects ALU OpB (0: Reg_Rs2, 1: Imm)
+    logic                       alu_src;
     logic [`ALU_CONTROL_WIDTH-1:0] alu_control;
     alu_a_src_sel_e             op_a_sel;
     pc_target_src_sel_e         pc_target_src_sel;
-    logic [2:0]                 funct3;     // Pipelined funct3
+    logic [2:0]                 funct3;
 
-    // Data
     logic [`DATA_WIDTH-1:0]     pc;
     logic [`DATA_WIDTH-1:0]     pc_plus_4;
     logic [`DATA_WIDTH-1:0]     rs1_data;
     logic [`DATA_WIDTH-1:0]     rs2_data;
     logic [`DATA_WIDTH-1:0]     imm_ext;
 
-    // Register Addresses
     logic [`REG_ADDR_WIDTH-1:0] rs1_addr;
     logic [`REG_ADDR_WIDTH-1:0] rs2_addr;
     logic [`REG_ADDR_WIDTH-1:0] rd_addr;
 } id_ex_data_t;
 
-// Data from Execute to Memory
 typedef struct packed {
-    // Control Signals
     logic                       reg_write;
     logic [1:0]                 result_src;
     logic                       mem_write;
-    logic [2:0]                 funct3;     // For memory access type
+    logic [2:0]                 funct3;
 
-    // Data
-    logic [`DATA_WIDTH-1:0]     alu_result; // Effective address or ALU result
-    logic [`DATA_WIDTH-1:0]     rs2_data;   // Data to be stored
-    logic [`DATA_WIDTH-1:0]     pc_plus_4;  // For JAL/JALR writeback
+    logic [`DATA_WIDTH-1:0]     alu_result;
+    logic [`DATA_WIDTH-1:0]     rs2_data;
+    logic [`DATA_WIDTH-1:0]     pc_plus_4;
 
-    // Register Address
     logic [`REG_ADDR_WIDTH-1:0] rd_addr;
 } ex_mem_data_t;
 
-// Data from Memory to Writeback
 typedef struct packed {
-    // Control Signals
     logic                       reg_write;
     logic [1:0]                 result_src;
 
-    // Data
-    logic [`DATA_WIDTH-1:0]     read_data_mem; // Data read from memory
-    logic [`DATA_WIDTH-1:0]     alu_result;    // ALU result from EX
-    logic [`DATA_WIDTH-1:0]     pc_plus_4;     // PC+4 from EX
+    logic [`DATA_WIDTH-1:0]     read_data_mem;
+    logic [`DATA_WIDTH-1:0]     alu_result;
+    logic [`DATA_WIDTH-1:0]     pc_plus_4;
 
-    // Register Address
     logic [`REG_ADDR_WIDTH-1:0] rd_addr;
 } mem_wb_data_t;
 
-// Data for actual writeback to Register File (subset of mem_wb_data_t + selected result)
 typedef struct packed {
     logic                       reg_write_en;
     logic [`REG_ADDR_WIDTH-1:0] rd_addr;
@@ -115,34 +178,30 @@ typedef struct packed {
 } rf_write_data_t;
 
 
-// Control signals from Hazard Unit
 typedef struct packed {
     logic       stall_f;
-    logic       stall_d; // Stalls IF/ID latching new data
-    logic       flush_d; // Clears IF/ID outputs (inserts NOP)
-    logic       flush_e; // Clears ID/EX outputs (inserts NOP)
+    logic       stall_d;
+    logic       flush_d;
+    logic       flush_e;
     logic [1:0] forward_a_e;
     logic [1:0] forward_b_e;
 } hazard_control_t;
 
 
-// NOP default values for pipeline data structures
-// Used for reset and flushing stages
-
 localparam if_id_data_t NOP_IF_ID_DATA = '{
     instr:      32'b0,
-    pc:         `PC_RESET_VALUE, // Or other defined "safe" PC
-    pc_plus_4:  `PC_RESET_VALUE + 4 // Or other defined "safe" PC+4
+    pc:         `PC_RESET_VALUE,
+    pc_plus_4:  `PC_RESET_VALUE + 4
 };
 
 localparam id_ex_data_t NOP_ID_EX_DATA = '{
     reg_write:          1'b0,
-    result_src:         2'b00, // ALU Result
+    result_src:         2'b00,
     mem_write:          1'b0,
     jump:               1'b0,
     branch:             1'b0,
-    alu_src:            1'b0,  // Operand B from Reg
-    alu_control:        `ALU_OP_ADD, // Default ADD
+    alu_src:            1'b0,
+    alu_control:        `ALU_OP_ADD,
     op_a_sel:           ALU_A_SRC_RS1,
     pc_target_src_sel:  PC_TARGET_SRC_PC_PLUS_IMM,
     funct3:             3'b000,
@@ -176,133 +235,296 @@ localparam mem_wb_data_t NOP_MEM_WB_DATA = '{
     rd_addr:            `REG_ADDR_WIDTH'(0)
 };
 
-`endif // PIPELINE_TYPES_SVH
+`endif
 
 
---- File: rtl/common/control_signals_defines.svh ---
-// rtl/common/control_signals_defines.svh
-`ifndef CONTROL_SIGNALS_DEFINES_SVH
-`define CONTROL_SIGNALS_DEFINES_SVH
+--- File: rtl/common/alu_defines.svh ---
+`ifndef ALU_DEFINES_SVH
+`define ALU_DEFINES_SVH
 
-// Selector for ALU Operand A
-typedef enum logic [1:0] {
-    ALU_A_SRC_RS1,   // Select RS1 data
-    ALU_A_SRC_PC,    // Select PC
-    ALU_A_SRC_ZERO   // Select constant Zero (for LUI: 0 + Imm)
-    // ALU_A_SRC_FWD // Will be handled by forwarding logic, this selects the *original* source
-} alu_a_src_sel_e;
+`define ALU_CONTROL_WIDTH 4
 
-// Selector for PC Target Address source in Execute stage
-typedef enum logic [0:0] { // Only two main sources for now
-    PC_TARGET_SRC_PC_PLUS_IMM, // Target = PC + Immediate (for Branch, JAL)
-    PC_TARGET_SRC_ALU_JALR     // Target = (ALU_Result from RS1+Imm) & ~1 (for JALR)
-} pc_target_src_sel_e;
+`define ALU_OP_ADD  4'b0000 // Addition
+`define ALU_OP_SUB  4'b0001 // Subtraction
+`define ALU_OP_SLL  4'b0010 // Shift Left Logical
+`define ALU_OP_SLT  4'b0011 // Set Less Than (Signed)
+`define ALU_OP_SLTU 4'b0100 // Set Less Than (Unsigned)
+`define ALU_OP_XOR  4'b0101 // XOR
+`define ALU_OP_SRL  4'b0110 // Shift Right Logical
+`define ALU_OP_SRA  4'b0111 // Shift Right Arithmetic
+`define ALU_OP_OR   4'b1000 // OR
+`define ALU_OP_AND  4'b1001 // AND
 
-`endif // CONTROL_SIGNALS_DEFINES_SVH
+`endif
 
 
---- File: rtl/common/immediate_types.svh ---
-// rtl/common/immediate_types.svh
-`ifndef IMMEDIATE_TYPES_SVH
-`define IMMEDIATE_TYPES_SVH
+--- File: rtl/core/control_unit.sv ---
+`include "common/defines.svh"
+`include "common/alu_defines.svh"
+`include "common/immediate_types.svh"
+`include "common/riscv_opcodes.svh"
+`include "common/control_signals_defines.svh"
 
-// Enum for selecting immediate type in immediate_generator
-// This allows the control unit to specify exactly which format to use.
-typedef enum logic [2:0] {
-    IMM_TYPE_NONE, // For R-type or when immediate is not used by ALU operand B or for address calculation
-    IMM_TYPE_I,    // I-type (ADDI, LW, JALR)
-    IMM_TYPE_S,    // S-type (SW)
-    IMM_TYPE_B,    // B-type (Branches)
-    IMM_TYPE_U,    // U-type (LUI, AUIPC)
-    IMM_TYPE_J,     // J-type (JAL)
-    IMM_TYPE_ISHIFT // Новый тип для SLLI, SRLI, SRAI
-} immediate_type_e;
+module control_unit (
+    input  logic [6:0] op,
+    input  logic [2:0] funct3,
+    input  logic       funct7_5,
 
-`endif // IMMEDIATE_TYPES_SVH
+    output logic       reg_write_d_o,
+    output logic [1:0] result_src_d_o,
+    output logic       mem_write_d_o,
+    output logic       jump_d_o,
+    output logic       branch_d_o,
+    output logic       alu_src_d_o,
+    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o,
+    output immediate_type_e imm_type_d_o,
+    output logic [2:0] funct3_d_o,
+    output alu_a_src_sel_e op_a_sel_d_o,
+    output pc_target_src_sel_e pc_target_src_sel_d_o
+);
+
+    assign funct3_d_o = funct3;
+
+    always_comb begin
+        reg_write_d_o   = 1'b0;
+        result_src_d_o  = 2'b00;
+        mem_write_d_o   = 1'b0;
+        jump_d_o        = 1'b0;
+        branch_d_o      = 1'b0;
+        alu_src_d_o     = 1'b0;
+        alu_control_d_o = `ALU_OP_ADD;
+        imm_type_d_o    = IMM_TYPE_NONE;
+        op_a_sel_d_o    = ALU_A_SRC_RS1;
+        pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM;
+
+        case (op)
+            `OPCODE_LUI: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1;
+                imm_type_d_o    = IMM_TYPE_U;
+                op_a_sel_d_o    = ALU_A_SRC_ZERO;
+                alu_control_d_o = `ALU_OP_ADD;
+                result_src_d_o  = 2'b00;
+            end
+            `OPCODE_AUIPC: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1;
+                imm_type_d_o    = IMM_TYPE_U;
+                op_a_sel_d_o    = ALU_A_SRC_PC;
+                alu_control_d_o = `ALU_OP_ADD;
+                result_src_d_o  = 2'b00;
+            end
+            `OPCODE_JAL: begin
+                reg_write_d_o   = 1'b1;
+                jump_d_o        = 1'b1;
+                imm_type_d_o    = IMM_TYPE_J;
+                result_src_d_o  = 2'b10;
+                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM;
+                op_a_sel_d_o    = ALU_A_SRC_PC;
+                alu_src_d_o     = 1'b1;
+                alu_control_d_o = `ALU_OP_ADD;
+            end
+            `OPCODE_JALR: begin
+                reg_write_d_o   = 1'b1;
+                jump_d_o        = 1'b1;
+                alu_src_d_o     = 1'b1;
+                imm_type_d_o    = IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                alu_control_d_o = `ALU_OP_ADD;
+                result_src_d_o  = 2'b10;
+                pc_target_src_sel_d_o = PC_TARGET_SRC_ALU_JALR;
+            end
+            `OPCODE_BRANCH: begin
+                branch_d_o      = 1'b1;
+                alu_src_d_o     = 1'b0;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                imm_type_d_o    = IMM_TYPE_B;
+                reg_write_d_o   = 1'b0;
+                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM;
+                case (funct3)
+                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB;
+                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB;
+                    `FUNCT3_BLT:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_BLTU: alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU;
+                    default:      alu_control_d_o = `ALU_OP_ADD;
+                endcase
+            end
+            `OPCODE_LOAD: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1;
+                imm_type_d_o    = IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                alu_control_d_o = `ALU_OP_ADD;
+                result_src_d_o  = 2'b01;
+                mem_write_d_o   = 1'b0;
+            end
+            `OPCODE_STORE: begin
+                alu_src_d_o     = 1'b1;
+                imm_type_d_o    = IMM_TYPE_S;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                alu_control_d_o = `ALU_OP_ADD;
+                mem_write_d_o   = 1'b1;
+                reg_write_d_o   = 1'b0;
+            end
+            `OPCODE_OP_IMM: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b1;
+                imm_type_d_o    = (funct3 == `FUNCT3_SLLI || funct3 == `FUNCT3_SRLI_SRAI) ? IMM_TYPE_ISHIFT : IMM_TYPE_I;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                result_src_d_o  = 2'b00;
+                case (funct3)
+                    `FUNCT3_ADDI:  alu_control_d_o = `ALU_OP_ADD;
+                    `FUNCT3_SLTI:  alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_SLTIU: alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_XORI:  alu_control_d_o = `ALU_OP_XOR;
+                    `FUNCT3_ORI:   alu_control_d_o = `ALU_OP_OR;
+                    `FUNCT3_ANDI:  alu_control_d_o = `ALU_OP_AND;
+                    `FUNCT3_SLLI:  alu_control_d_o = `ALU_OP_SLL;
+                    `FUNCT3_SRLI_SRAI: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
+                        else                               alu_control_d_o = `ALU_OP_SRL;
+                    end
+                    default:       alu_control_d_o = `ALU_OP_ADD;
+                endcase
+            end
+            `OPCODE_OP: begin
+                reg_write_d_o   = 1'b1;
+                alu_src_d_o     = 1'b0;
+                op_a_sel_d_o    = ALU_A_SRC_RS1;
+                imm_type_d_o    = IMM_TYPE_NONE;
+                result_src_d_o  = 2'b00;
+                case (funct3)
+                    `FUNCT3_ADD_SUB: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SUB;
+                        else                               alu_control_d_o = `ALU_OP_ADD;
+                    end
+                    `FUNCT3_SLL:   alu_control_d_o = `ALU_OP_SLL;
+                    `FUNCT3_SLT:   alu_control_d_o = `ALU_OP_SLT;
+                    `FUNCT3_SLTU:  alu_control_d_o = `ALU_OP_SLTU;
+                    `FUNCT3_XOR:   alu_control_d_o = `ALU_OP_XOR;
+                    `FUNCT3_SRL_SRA: begin
+                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
+                        else                               alu_control_d_o = `ALU_OP_SRL;
+                    end
+                    `FUNCT3_OR:    alu_control_d_o = `ALU_OP_OR;
+                    `FUNCT3_AND:   alu_control_d_o = `ALU_OP_AND;
+                    default:       alu_control_d_o = `ALU_OP_ADD;
+                endcase
+            end
+        endcase
+    end
+endmodule
 
 
---- File: rtl/common/riscv_opcodes.svh ---
-// rtl/common/riscv_opcodes.svh
-`ifndef RISCV_OPCODES_SVH
-`define RISCV_OPCODES_SVH
+--- File: rtl/core/hazard_unit.sv ---
+`include "common/defines.svh"
 
-// Opcodes (bottom 7 bits of instruction)
-`define OPCODE_LUI        7'b0110111 // Load Upper Immediate
-`define OPCODE_AUIPC      7'b0010111 // Add Upper Immediate to PC
-`define OPCODE_JAL        7'b1101111 // Jump and Link
-`define OPCODE_JALR       7'b1100111 // Jump and Link Register
-`define OPCODE_BRANCH     7'b1100011 // Conditional Branches (BEQ, BNE, etc.)
-`define OPCODE_LOAD       7'b0000011 // Loads (LB, LH, LW, LD, LBU, LHU, LWU)
-`define OPCODE_STORE      7'b0100011 // Stores (SB, SH, SW, SD)
-`define OPCODE_OP_IMM   7'b0010011 // Immediate Arithmetic/Logic (ADDI, SLTI, etc.)
-`define OPCODE_OP         7'b0110011 // Register-Register Arithmetic/Logic (ADD, SUB, etc.)
-`define OPCODE_MISC_MEM 7'b0001111 // FENCE, FENCE.I
-`define OPCODE_SYSTEM     7'b1110011 // ECALL, EBREAK, CSR instructions
+module hazard_unit (
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_ex_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_ex_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_ex_i,
+    input  logic                       result_src_ex0_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_mem_i,
+    input  logic                       reg_write_mem_i,
+    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,
+    input  logic                       reg_write_wb_i,
+    input  logic                       pc_src_ex_i,
 
-// Funct3 codes for OP_IMM, OP, BRANCH, LOAD, STORE, JALR
-// For OP_IMM & OP
-`define FUNCT3_ADDI       3'b000 // ADDI
-`define FUNCT3_ADD_SUB    3'b000 // ADD/SUB (OP)
-`define FUNCT3_SLLI       3'b001 // SLLI (OP_IMM)
-`define FUNCT3_SLL        3'b001 // SLL (OP)
-`define FUNCT3_SLTI       3'b010 // SLTI (OP_IMM)
-`define FUNCT3_SLT        3'b010 // SLT (OP)
-`define FUNCT3_SLTIU      3'b011 // SLTIU (OP_IMM)
-`define FUNCT3_SLTU       3'b011 // SLTU (OP)
-`define FUNCT3_XORI       3'b100 // XORI (OP_IMM)
-`define FUNCT3_XOR        3'b100 // XOR (OP)
-`define FUNCT3_SRLI_SRAI  3'b101 // SRLI/SRAI (OP_IMM) - Distinguish by funct7
-`define FUNCT3_SRL_SRA    3'b101 // SRL/SRA (OP)     - Distinguish by funct7
-`define FUNCT3_ORI        3'b110 // ORI (OP_IMM)
-`define FUNCT3_OR         3'b110 // OR (OP)
-`define FUNCT3_ANDI       3'b111 // ANDI (OP_IMM)
-`define FUNCT3_AND        3'b111 // AND (OP)
+    output logic [1:0]                 forward_a_ex_o,
+    output logic [1:0]                 forward_b_ex_o,
+    output logic                       stall_fetch_o,
+    output logic                       stall_decode_o,
+    output logic                       flush_decode_o,
+    output logic                       flush_execute_o
+);
 
-// For BRANCH
-`define FUNCT3_BEQ        3'b000
-`define FUNCT3_BNE        3'b001
-`define FUNCT3_BLT        3'b100
-`define FUNCT3_BGE        3'b101
-`define FUNCT3_BLTU       3'b110
-`define FUNCT3_BGEU       3'b111
+    logic lw_stall_internal;
 
-// For LOAD
-`define FUNCT3_LB         3'b000
-`define FUNCT3_LH         3'b001
-`define FUNCT3_LW         3'b010
-`define FUNCT3_LD         3'b011 // RV64
-`define FUNCT3_LBU        3'b100
-`define FUNCT3_LHU        3'b101
-`define FUNCT3_LWU        3'b110 // RV64
+    always_comb begin
+        if (reg_write_mem_i && (rd_addr_mem_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_mem_i == rs1_addr_ex_i)) begin
+            forward_a_ex_o = 2'b10;
+        end else if (reg_write_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_wb_i == rs1_addr_ex_i)) begin
+            forward_a_ex_o = 2'b01;
+        end else begin
+            forward_a_ex_o = 2'b00;
+        end
 
-// For STORE
-`define FUNCT3_SB         3'b000
-`define FUNCT3_SH         3'b001
-`define FUNCT3_SW         3'b010
-`define FUNCT3_SD         3'b011 // RV64
+        if (reg_write_mem_i && (rd_addr_mem_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_mem_i == rs2_addr_ex_i)) begin
+            forward_b_ex_o = 2'b10;
+        end else if (reg_write_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_wb_i == rs2_addr_ex_i)) begin
+            forward_b_ex_o = 2'b01;
+        end else begin
+            forward_b_ex_o = 2'b00;
+        end
 
-// For JALR
-`define FUNCT3_JALR       3'b000
+        lw_stall_internal = result_src_ex0_i &&
+                            ( (rs1_addr_id_i == rd_addr_ex_i && rs1_addr_id_i != `REG_ADDR_WIDTH'(0) ) ||
+                              (rs2_addr_id_i == rd_addr_ex_i && rs2_addr_id_i != `REG_ADDR_WIDTH'(0) ) );
 
-// Funct7 codes (or relevant bits)
-// For ADD/SUB and SRA/SRL distinction in OP and OP_IMM type instructions.
-// For R-type (OP) and I-type shifts (OP_IMM), bit 5 of funct7 (instr[30]) is often used.
-`define FUNCT7_5_SUB_ALT  1'b1 // For SUB, SRA, SRAI (funct7[5])
-`define FUNCT7_5_ADD_MAIN 1'b0 // For ADD, SRL, SRLI (funct7[5])
-// `define FUNCT7_SRL        7'b0000000 (SRL, SRLI, SRLW, SRLIW)
-// `define FUNCT7_SRA        7'b0100000 (SRA, SRAI, SRAW, SRAIW)
-// `define FUNCT7_ADD        7'b0000000
-// `define FUNCT7_SUB        7'b0100000
+        lw_stall_internal = result_src_ex0_i && (rd_addr_ex_i != `REG_ADDR_WIDTH'(0)) &&
+                           ( (rs1_addr_id_i == rd_addr_ex_i) ||
+                             (rs2_addr_id_i == rd_addr_ex_i) );
 
-`endif // RISCV_OPCODES_SVH
+        stall_fetch_o  = lw_stall_internal;
+        stall_decode_o = lw_stall_internal;
+
+        flush_decode_o = pc_src_ex_i;
+        flush_execute_o = lw_stall_internal || pc_src_ex_i;
+    end
+
+endmodule
+
+
+--- File: rtl/core/alu.sv ---
+`include "common/defines.svh"
+`include "common/alu_defines.svh"
+
+module alu (
+    input  logic [`DATA_WIDTH-1:0]     operand_a,
+    input  logic [`DATA_WIDTH-1:0]     operand_b,
+    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control,
+    output logic [`DATA_WIDTH-1:0]     result,
+    output logic                       zero_flag
+);
+
+    logic [`DATA_WIDTH-1:0] result_comb;
+    logic [5:0]             shift_amount;
+
+    assign shift_amount = operand_b[5:0];
+
+    always_comb begin
+        result_comb = {`DATA_WIDTH{1'bx}};
+
+        case (alu_control)
+            `ALU_OP_ADD:  result_comb = operand_a + operand_b;
+            `ALU_OP_SUB:  result_comb = operand_a - operand_b;
+            `ALU_OP_SLL:  result_comb = operand_a << shift_amount;
+            `ALU_OP_SLT:  result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+            `ALU_OP_SLTU: result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
+            `ALU_OP_XOR:  result_comb = operand_a ^ operand_b;
+            `ALU_OP_SRL:  result_comb = operand_a >> shift_amount;
+            `ALU_OP_SRA:  result_comb = $signed(operand_a) >>> shift_amount;
+            `ALU_OP_OR:   result_comb = operand_a | operand_b;
+            `ALU_OP_AND:  result_comb = operand_a & operand_b;
+            default:      result_comb = {`DATA_WIDTH{1'bx}};
+        endcase
+    end
+
+    assign result = result_comb;
+    assign zero_flag = (result_comb == {`DATA_WIDTH{1'b0}});
+
+endmodule
 
 
 --- File: rtl/core/memory_stage.sv ---
-// rtl/core/memory_stage.sv
 `include "common/pipeline_types.svh"
 
 module memory_stage #(
-    parameter string DATA_MEM_INIT_FILE_PARAM = "" // Parameter for data memory init file
+    parameter string DATA_MEM_INIT_FILE_PARAM = ""
 )(
     input  logic clk,
     input  logic rst_n,
@@ -334,865 +556,15 @@ module memory_stage #(
 endmodule
 
 
---- File: rtl/core/writeback_stage.sv ---
-// rtl/core/writeback_stage.sv
-`include "common/pipeline_types.svh"
-
-module writeback_stage (
-    // Input from Memory (latched by MEM/WB register in pipeline.sv)
-    input  mem_wb_data_t           mem_wb_data_i,
-
-    // Output to Register File write port (directly connected in pipeline.sv)
-    output rf_write_data_t         rf_write_data_o
-);
-
-    logic [`DATA_WIDTH-1:0] result_selected_for_rf;
-
-    // MUX to select the data to be written back to the register file
-    always_comb begin
-        case (mem_wb_data_i.result_src)
-            2'b00:  result_selected_for_rf = mem_wb_data_i.alu_result;    // Result from ALU
-            2'b01:  result_selected_for_rf = mem_wb_data_i.read_data_mem; // Data from memory
-            2'b10:  result_selected_for_rf = mem_wb_data_i.pc_plus_4;     // PC+4 for JAL/JALR
-            default: result_selected_for_rf = `DATA_WIDTH'('x); // Should not happen
-        endcase
-    end
-
-    // Assign outputs for the register file write data structure
-    assign rf_write_data_o.reg_write_en = mem_wb_data_i.reg_write;
-    assign rf_write_data_o.rd_addr      = mem_wb_data_i.rd_addr;
-    assign rf_write_data_o.result_to_rf = result_selected_for_rf;
-
-endmodule
-
-
---- File: rtl/core/pipeline_control.sv ---
-// rtl/core/pipeline_control.sv
-`include "common/pipeline_types.svh"
-
-module pipeline_control (
-    // Inputs from various pipeline stages (latched values in pipeline.sv)
-    input  if_id_data_t    if_id_data_i,     // For rs1_addr_d, rs2_addr_d (extracted from instr)
-    input  id_ex_data_t    id_ex_data_i,     // For RdE, RegWriteE, ResultSrcE (load-use) and Rs1E, Rs2E (for forwarding)
-    input  ex_mem_data_t   ex_mem_data_i,    // For RdM, RegWriteM (forwarding)
-    input  mem_wb_data_t   mem_wb_data_i,    // For RdW, RegWriteW (forwarding)
-
-    input  logic           pc_src_from_ex_i, // PCSrcE from Execute stage output
-
-    // Output structure with all hazard control signals
-    output hazard_control_t hazard_ctrl_o
-);
-
-    logic load_use_hazard;
-    logic is_load_in_ex; // This is RdE, MemReadE
-
-    // Extract rs1_addr and rs2_addr for the instruction currently in Decode stage,
-    // which will be in Execute stage when these forwarding/stall signals are applied.
-    // These correspond to Rs1D and Rs2D from the diagram for load-use hazard detection.
-    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_from_instr; // This is Rs1_ID
-    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_from_instr; // This is Rs2_ID
-
-    assign rs1_addr_d_from_instr = if_id_data_i.instr[19:15]; // Correct: rs1 of instruction in ID
-    assign rs2_addr_d_from_instr = if_id_data_i.instr[24:20]; // Correct: rs2 of instruction in ID
-
-
-    // ** 1. Load-Use Hazard Detection & Stall Generation **
-    // An instruction in EX is a load, and its destination (RdE) is a source for an instruction in ID.
-    assign is_load_in_ex = (id_ex_data_i.result_src == 2'b01); // Data from memory -> indicates a Load instruction in EX
-
-    // load_use_hazard occurs if instruction in EX is a load, it writes to a register (RdE != x0),
-    // AND that RdE is a source (Rs1D or Rs2D) for the instruction currently in Decode.
-    assign load_use_hazard = is_load_in_ex && id_ex_data_i.reg_write && (id_ex_data_i.rd_addr != 0) &&
-                             ((id_ex_data_i.rd_addr == rs1_addr_d_from_instr) || (id_ex_data_i.rd_addr == rs2_addr_d_from_instr));
-
-    assign hazard_ctrl_o.stall_f = load_use_hazard; // Stall PC and IF/ID fetch
-    assign hazard_ctrl_o.stall_d = load_use_hazard; // Stall IF/ID register (holds current content), preventing ID stage from getting new instr.
-
-    // ** 2. Flush Generation **
-    // FlushD (IF/ID output becomes NOP): if branch/jump taken in EX.
-    // FlushE (ID/EX output becomes NOP): if load-use stall OR branch/jump taken in EX.
-    assign hazard_ctrl_o.flush_d = pc_src_from_ex_i; // Correct: Flush instruction in Decode if branch taken
-    assign hazard_ctrl_o.flush_e = load_use_hazard || pc_src_from_ex_i; // Correct: Flush instruction in Execute
-
-
-    // ** 3. Forwarding Logic **
-    // Forwarding for instruction currently in Execute stage.
-    // Rs1E and Rs2E for the current EX instruction are id_ex_data_i.rs1_addr and id_ex_data_i.rs2_addr.
-
-    // Forward for Operand A (connected to ALU operand A input in Execute)
-    always_comb begin
-        hazard_ctrl_o.forward_a_e = 2'b00; // Default: No forward
-
-        // Check EX/MEM stage hazard: if instr in MEM writes to RdM, and RdM is Rs1 of instr in EX
-        // AND the result from EX/MEM is NOT from a memory read (i.e., it's an ALU result suitable for forwarding)
-        if (ex_mem_data_i.reg_write && (ex_mem_data_i.rd_addr != 5'd0) && (ex_mem_data_i.rd_addr == id_ex_data_i.rs1_addr) &&
-             (ex_mem_data_i.result_src != 2'b01) ) begin // <-- ADDED CHECK: Not a memory read result
-            hazard_ctrl_o.forward_a_e = 2'b10; // Forward ALU_Result from EX/MEM
-        end
-        // Check MEM/WB stage hazard: if instr in WB writes to RdW, and RdW is Rs1 of instr in EX
-        // (and not already covered by EX/MEM forward)
-        else if (mem_wb_data_i.reg_write && (mem_wb_data_i.rd_addr != 0) &&
-                 (mem_wb_data_i.rd_addr == id_ex_data_i.rs1_addr)) begin
-            // Data from MEM/WB (mem_wb_data_i) can be either ALU result or Memory Read Data, selected by its own result_src.
-            // The rf_write_data_from_wb.result_to_rf in pipeline.sv already handles this selection.
-            hazard_ctrl_o.forward_a_e = 2'b01; // Forward final result from MEM/WB
-        end
-    end
-
-    // Forward for Operand B (connected to ALU operand B input in Execute, if not an immediate)
-    always_comb begin
-        hazard_ctrl_o.forward_b_e = 2'b00; // Default: No forward
-
-        if (ex_mem_data_i.reg_write && (ex_mem_data_i.rd_addr != 0) &&
-            (ex_mem_data_i.rd_addr == id_ex_data_i.rs2_addr) &&
-            (ex_mem_data_i.result_src != 2'b01) ) begin // <-- ADDED CHECK
-            hazard_ctrl_o.forward_b_e = 2'b10; // Forward ALU_Result from EX/MEM
-        end
-        else if (mem_wb_data_i.reg_write && (mem_wb_data_i.rd_addr != 0) &&
-                 (mem_wb_data_i.rd_addr == id_ex_data_i.rs2_addr)) begin
-            hazard_ctrl_o.forward_b_e = 2'b01; // Forward final result from MEM/WB
-        end
-    end
-endmodule
-
-
---- File: rtl/core/data_memory.sv ---
-// rtl/core/data_memory.sv
-`include "common/defines.svh"
-`include "common/riscv_opcodes.svh" // For FUNCT3 defines (LB, LH, LW, etc.)
-
-module data_memory #(
-    parameter string DATA_MEM_INIT_FILE = "" // This parameter must exist
-)(
-    input  logic clk,
-    input  logic rst_n,
-
-    input  logic [`DATA_WIDTH-1:0]     addr_i,        // Address from ALU result
-    input  logic [`DATA_WIDTH-1:0]     write_data_i,  // Data from RS2 (for stores)
-    input  logic                       mem_write_en_i,  // From MemWriteM control signal
-    input  logic [2:0]                 funct3_i,      // To determine load/store type (size and sign)
-
-    output logic [`DATA_WIDTH-1:0]     read_data_o    // Data read from memory (for loads)
-);
-
-    // Parameter for memory size (e.g., 2^10 = 1024 words of 64-bit)
-    // Addresses are byte addresses.
-    localparam MEM_ADDR_BITS = 10; // For 1KB of byte-addressable memory (2^10 bytes)
-    localparam MEM_SIZE_BYTES = 1 << MEM_ADDR_BITS;
-    localparam MEM_ADDR_WIDTH = $clog2(MEM_SIZE_BYTES);
-
-    // Byte-addressable memory array. Each element is a byte.
-    logic [7:0] mem [MEM_SIZE_BYTES-1:0];
-    logic [`DATA_WIDTH-1:0] aligned_word_read_comb; // Changed name to avoid potential conflict
-    logic [`DATA_WIDTH-1:0] temp_read_data_comb;    // Changed name
-
-    // Read logic (combinational read based on address)
-    always_comb begin
-        temp_read_data_comb = `DATA_WIDTH'('x); // Default to 'x'
-        aligned_word_read_comb = `DATA_WIDTH'('0); // Default to 0
-
-        if (addr_i < MEM_SIZE_BYTES) begin
-            logic [2:0] byte_offset_in_word = addr_i[2:0];
-            logic [`DATA_WIDTH-1:0] current_aligned_word;
-
-            // Construct the 64-bit aligned word from individual bytes
-            for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
-                if (((addr_i & ~((`DATA_WIDTH/8) - 1)) + `DATA_WIDTH'(i)) < MEM_SIZE_BYTES) begin
-                    current_aligned_word[(i*8) +: 8] = mem[(addr_i & ~((`DATA_WIDTH/8) - 1)) + `DATA_WIDTH'(i)];
-                end else begin
-                    current_aligned_word[(i*8) +: 8] = 8'h00; // Out of bounds byte read as 0
-                end
-            end
-            aligned_word_read_comb = current_aligned_word;
-
-
-            case (funct3_i)
-                `FUNCT3_LB: begin // Load Byte (signed)
-                    temp_read_data_comb = {{(`DATA_WIDTH-8){aligned_word_read_comb[byte_offset_in_word*8 + 7]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 8]};
-                end
-                `FUNCT3_LH: begin // Load Half-word (signed)
-                    temp_read_data_comb = {{(`DATA_WIDTH-16){aligned_word_read_comb[byte_offset_in_word*8 + 15]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 16]};
-                end
-                `FUNCT3_LW: begin // Load Word (signed, 32-bit)
-                    temp_read_data_comb = {{(`DATA_WIDTH-32){aligned_word_read_comb[byte_offset_in_word*8 + 31]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 32]};
-                end
-                `FUNCT3_LD: begin // Load Double-word (64-bit)
-                    temp_read_data_comb = aligned_word_read_comb;
-                end
-                `FUNCT3_LBU: begin // Load Byte (unsigned)
-                    temp_read_data_comb = {{(`DATA_WIDTH-8){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 8]};
-                end
-                `FUNCT3_LHU: begin // Load Half-word (unsigned)
-                    temp_read_data_comb = {{(`DATA_WIDTH-16){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 16]};
-                end
-                `FUNCT3_LWU: begin // Load Word (unsigned, 32-bit into 64-bit)
-                    temp_read_data_comb = {{(`DATA_WIDTH-32){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 32]};
-                end
-                default: temp_read_data_comb = `DATA_WIDTH'('x);
-            endcase
-        end else begin
-             temp_read_data_comb = `DATA_WIDTH'('x); // Address out of bounds
-        end
-    end
-    assign read_data_o = temp_read_data_comb;
-
-    // Write logic (synchronous write on positive clock edge)
-    always_ff @(posedge clk) begin
-        if (mem_write_en_i) begin // Check enable first
-            // Ensure address is within bounds for each byte written
-            case (funct3_i)
-                `FUNCT3_SB: begin // Store Byte
-                    if (addr_i < MEM_SIZE_BYTES) mem[addr_i] = write_data_i[7:0];
-                end
-                `FUNCT3_SH: begin // Store Half-word
-                    if (addr_i < MEM_SIZE_BYTES - 1) begin // Check bounds for 2 bytes
-                        mem[addr_i]   = write_data_i[7:0];
-                        mem[addr_i+1] = write_data_i[15:8];
-                    end
-                end
-                `FUNCT3_SW: begin // Store Word (32-bit)
-                    if (addr_i < MEM_SIZE_BYTES - 3) begin // Check bounds for 4 bytes
-                        for (int i = 0; i < 4; i++) begin
-                            mem[addr_i+i] = write_data_i[i*8 +: 8];
-                        end
-                    end
-                end
-                `FUNCT3_SD: begin // Store Double-word (64-bit)
-                     if (addr_i < MEM_SIZE_BYTES - 7) begin // Check bounds for 8 bytes
-                        for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
-                            mem[addr_i + `DATA_WIDTH'(i)] = write_data_i[i*8 +: 8];
-                        end
-                    end
-                end
-                default: ; // No action for other funct3 values during store
-            endcase
-        end
-    end
-
-    // Initialize memory on reset (for simulation)
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            for (int i = 0; i < MEM_SIZE_BYTES; i++) begin
-                mem[i] = 8'h00;
-            end
-        end
-    end
-    // Added initial block for Verilator to load memory init file
-    initial begin
-        if (DATA_MEM_INIT_FILE != "") begin
-            $readmemh(DATA_MEM_INIT_FILE, mem);
-        end
-    end
-
-endmodule
-
-
---- File: rtl/core/execute.sv ---
-// rtl/core/execute.sv
-`include "common/pipeline_types.svh"
-`include "common/riscv_opcodes.svh" // For FUNCT3 defines for branches
-
-module execute (
-    // Clock and Reset (potentially unused if purely combinational)
-    // input  logic clk,
-    // input  logic rst_n,
-
-    // Input from Decode (latched by ID/EX register in pipeline.sv)
-    input  id_ex_data_t            id_ex_data_i,
-
-    // Forwarding signals from Hazard Unit and data from later stages
-    input  logic [`DATA_WIDTH-1:0] forward_data_mem_i, // Data from EX/MEM output (ALUResultM or ReadDataM)
-    input  logic [`DATA_WIDTH-1:0] forward_data_wb_i,  // Data from MEM/WB output (ResultW)
-    input  logic [1:0]             forward_a_e_i,      // Control for OpA forwarding MUX
-    input  logic [1:0]             forward_b_e_i,      // Control for OpB forwarding MUX
-
-    // Output to Memory stage (to be latched by EX/MEM register in pipeline.sv)
-    output ex_mem_data_t           ex_mem_data_o,
-
-    // Outputs to Fetch Stage / PC update logic
-    output logic                   pc_src_o,           // PCSrcE: 1 if branch/jump taken
-    output logic [`DATA_WIDTH-1:0] pc_target_addr_o // PCTargetE: target address
-);
-
-    logic [`DATA_WIDTH-1:0] alu_operand_a_mux_out;
-    logic [`DATA_WIDTH-1:0] alu_operand_a_final;
-    logic [`DATA_WIDTH-1:0] alu_operand_b_mux_out;
-    logic [`DATA_WIDTH-1:0] alu_operand_b_final;
-    logic [`DATA_WIDTH-1:0] write_data_e;
-
-    logic [`DATA_WIDTH-1:0] alu_result_internal;
-    logic                   alu_zero_flag_internal;
-
-    // ALU Operand A Source Selection (before forwarding)
-    always_comb begin
-        case (id_ex_data_i.op_a_sel)
-            ALU_A_SRC_RS1:  alu_operand_a_mux_out = id_ex_data_i.rs1_data;
-            ALU_A_SRC_PC:   alu_operand_a_mux_out = id_ex_data_i.pc;
-            ALU_A_SRC_ZERO: alu_operand_a_mux_out = `DATA_WIDTH'(0);
-            default:        alu_operand_a_mux_out = id_ex_data_i.rs1_data; // Should not happen
-        endcase
-    end
-
-    // ALU Operand A Forwarding
-    always_comb begin
-        case (forward_a_e_i)
-            2'b00:  alu_operand_a_final = alu_operand_a_mux_out;    // No forward
-            2'b10:  alu_operand_a_final = forward_data_mem_i;       // Forward from EX/MEM stage (RdM)
-            2'b01:  alu_operand_a_final = forward_data_wb_i;        // Forward from MEM/WB stage (RdW)
-            default: alu_operand_a_final = alu_operand_a_mux_out;   // Should not happen
-        endcase
-    end
-
-    // ALU Operand B Source Selection (before forwarding)
-    assign alu_operand_b_mux_out = id_ex_data_i.alu_src ? id_ex_data_i.imm_ext : id_ex_data_i.rs2_data;
-
-    // ALU Operand B Forwarding
-    always_comb begin
-        case (forward_b_e_i)
-            2'b00:  write_data_e = alu_operand_b_mux_out;    // No forward
-            2'b10:  write_data_e = forward_data_mem_i;       // Forward from EX/MEM stage (RdM)
-            2'b01:  write_data_e = forward_data_wb_i;        // Forward from MEM/WB stage (RdW)
-            default: write_data_e = alu_operand_b_mux_out;   // Should not happen
-        endcase
-        if (id_ex_data_i.alu_src) begin // If Operand B is an Immediate, no forwarding
-            alu_operand_b_final = id_ex_data_i.imm_ext;
-        end else begin
-            alu_operand_b_final = write_data_e;
-        end
-    end
-
-    // ALU Instance
-    alu u_alu (
-        .operand_a   (alu_operand_a_final),
-        .operand_b   (alu_operand_b_final),
-        .alu_control (id_ex_data_i.alu_control),
-        .result      (alu_result_internal),
-        .zero_flag   (alu_zero_flag_internal)
-    );
-
-    // PC Target Address Calculation
-    logic [`DATA_WIDTH-1:0] target_addr_pc_plus_imm;
-    logic [`DATA_WIDTH-1:0] target_addr_alu_jalr_masked;
-
-    assign target_addr_pc_plus_imm = id_ex_data_i.pc + id_ex_data_i.imm_ext;
-    // For JALR: target = (ALU result of RS1 + Imm) & ~1.
-    // ALU computes (RS1 + Imm) if op_a_sel=RS1, alu_src=Imm, alu_control=ADD.
-    // This specific ALU result (alu_result_internal) is used for JALR.
-    assign target_addr_alu_jalr_masked = alu_result_internal & ~(`DATA_WIDTH'(1));
-
-    assign pc_target_addr_o = (id_ex_data_i.pc_target_src_sel == PC_TARGET_SRC_ALU_JALR) ?
-                               target_addr_alu_jalr_masked : target_addr_pc_plus_imm;
-
-    // Branch Condition Logic
-    logic take_branch;
-    always_comb begin
-        take_branch = 1'b0;
-        if (id_ex_data_i.branch) begin
-            case (id_ex_data_i.funct3) // Use pipelined funct3
-                `FUNCT3_BEQ:  take_branch = alu_zero_flag_internal;
-                `FUNCT3_BNE:  take_branch = ~alu_zero_flag_internal;
-                `FUNCT3_BLT:  take_branch = alu_result_internal[0];  // SLT result is 1 if taken
-                `FUNCT3_BGE:  take_branch = ~alu_result_internal[0]; // SLT result is 0 if taken
-                `FUNCT3_BLTU: take_branch = alu_result_internal[0];  // SLTU result is 1 if taken
-                `FUNCT3_BGEU: take_branch = ~alu_result_internal[0]; // SLTU result is 0 if taken
-                default:      take_branch = 1'b0;
-            endcase
-        end
-    end
-
-    // PCSrc signal: Controls MUX for next PC in Fetch stage
-    assign pc_src_o = (id_ex_data_i.jump) || (id_ex_data_i.branch && take_branch);
-
-    // Assign outputs to EX/MEM data structure
-    assign ex_mem_data_o.reg_write  = id_ex_data_i.reg_write;
-    assign ex_mem_data_o.result_src = id_ex_data_i.result_src;
-    assign ex_mem_data_o.mem_write  = id_ex_data_i.mem_write;
-    assign ex_mem_data_o.funct3     = id_ex_data_i.funct3;      // Pass funct3 for Memory stage (load/store type)
-    assign ex_mem_data_o.alu_result = alu_result_internal;      // Result of ALU operation
-    assign ex_mem_data_o.rs2_data   = write_data_e;    // Original RS2 data (e.g., for Store instructions)
-    assign ex_mem_data_o.rd_addr    = id_ex_data_i.rd_addr;
-    assign ex_mem_data_o.pc_plus_4  = id_ex_data_i.pc_plus_4;   // For JAL/JALR writeback
-
-endmodule
-
-
---- File: rtl/core/hazard_unit.sv ---
-// rtl/core/hazard_unit.sv
-`include "common/defines.svh"
-
-module hazard_unit (
-    // Inputs from ID/EX register values (current EX stage instruction)
-    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_ex_i,    // Rs1E from id_ex_data_q.rs1_addr
-    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_ex_i,    // Rs2E from id_ex_data_q.rs2_addr
-    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_ex_i,     // RdE from id_ex_data_q.rd_addr
-    input  logic                       result_src_ex0_i, // LSB of ResultSrc from id_ex_data_q.result_src[0] (1 if load)
-
-    // Inputs from instruction in ID stage (next EX stage instruction if not stalled/flushed)
-    input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_i,    // Rs1D from decode.rs1_addr_d_o
-    input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_i,    // Rs2D from decode.rs2_addr_d_o
-
-    // Inputs from EX/MEM register values
-    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_mem_i,     // RdM from ex_mem_data_q.rd_addr
-    input  logic                       reg_write_mem_i,   // RegWriteM from ex_mem_data_q.reg_write
-
-    // Inputs from MEM/WB register values
-    input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,     // RdW from mem_wb_data_q.rd_addr
-    input  logic                       reg_write_wb_i,   // RegWriteW from mem_wb_data_q.reg_write
-
-    // Input from Execute stage output
-    input  logic                       pc_src_ex_i,       // PCSrcE from execute.pc_src_o
-
-    // Outputs for pipeline control
-    output logic [1:0]                 forward_a_ex_o,
-    output logic [1:0]                 forward_b_ex_o,
-    output logic                       stall_fetch_o,
-    output logic                       stall_decode_o,
-    output logic                       flush_decode_o,
-    output logic                       flush_execute_o
-);
-
-    logic lw_stall_internal;
-
-    always_comb begin
-        // Forwarding for Operand A in Execute Stage
-        // Priority: MEM stage hazard, then WB stage hazard
-        if (reg_write_mem_i && (rd_addr_mem_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_mem_i == rs1_addr_ex_i)) begin
-            forward_a_ex_o = 2'b10; // Forward from EX/MEM stage data path
-        end else if (reg_write_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_wb_i == rs1_addr_ex_i)) begin
-            forward_a_ex_o = 2'b01; // Forward from MEM/WB stage data path
-        end else begin
-            forward_a_ex_o = 2'b00; // No forwarding for Operand A
-        end
-
-        // Forwarding for Operand B in Execute Stage
-        // Priority: MEM stage hazard, then WB stage hazard
-        if (reg_write_mem_i && (rd_addr_mem_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_mem_i == rs2_addr_ex_i)) begin
-            forward_b_ex_o = 2'b10; // Forward from EX/MEM stage data path
-        end else if (reg_write_wb_i && (rd_addr_wb_i != `REG_ADDR_WIDTH'(0)) && (rd_addr_wb_i == rs2_addr_ex_i)) begin
-            forward_b_ex_o = 2'b01; // Forward from MEM/WB stage data path
-        end else begin
-            forward_b_ex_o = 2'b00; // No forwarding for Operand B
-        end
-
-        // Load-Use Stall detection (based on book's simpler logic)
-        // Stall if:
-        // 1. Instruction currently in EX stage (id_ex_data_q) is a load (result_src_ex0_i == 1'b1).
-        // 2. Its destination register (rd_addr_ex_i) is one of the source registers (rs1_addr_id_i or rs2_addr_id_i)
-        //    of the instruction currently in ID stage (if_id_data_q).
-        lw_stall_internal = result_src_ex0_i &&
-                            ( (rs1_addr_id_i == rd_addr_ex_i && rs1_addr_id_i != `REG_ADDR_WIDTH'(0) ) ||    // check rs1_addr_id_i is not x0
-                              (rs2_addr_id_i == rd_addr_ex_i && rs2_addr_id_i != `REG_ADDR_WIDTH'(0) ) );   // check rs2_addr_id_i is not x0
-        // Added checks for rsX_addr_id_i != 0 to prevent stalling if ID stage reads x0.
-        // The rd_addr_ex_i != 0 check is implicitly handled if rsX_addr_id_i matches and is not x0.
-        // If rd_addr_ex_i is x0, a load to x0 should not cause a stall if ID reads x0.
-        // If rd_addr_ex_i is x0, and ID reads a non-x0 register, no match, no stall.
-        // If rd_addr_ex_i is non-x0, and ID reads x0, no match, no stall.
-        // The condition `rd_addr_ex_i != 0` is also important for loads to x0.
-        // Let's refine: stall if load in EX writes to non-x0, and ID reads that non-x0.
-        lw_stall_internal = result_src_ex0_i && (rd_addr_ex_i != `REG_ADDR_WIDTH'(0)) &&
-                           ( (rs1_addr_id_i == rd_addr_ex_i) ||
-                             (rs2_addr_id_i == rd_addr_ex_i) );
-        // This version aligns with: stall if EX is load to actual reg (not x0), and ID reads that same reg.
-        // The check `rsX_addr_id_i != 0` is implicitly covered because if `rsX_addr_id_i == 0`, it cannot match `rd_addr_ex_i` (which is !=0).
-
-        stall_fetch_o  = lw_stall_internal; // Stall PC and IF/ID register fetch
-        stall_decode_o = lw_stall_internal; // Stall IF/ID register latch (prevents ID from getting new instr)
-
-        // Flush logic
-        flush_decode_o = pc_src_ex_i; // Flush instruction in Decode if branch/jump taken in EX
-        flush_execute_o = lw_stall_internal || pc_src_ex_i; // Flush instruction in Execute if load-use stall OR branch/jump taken
-    end
-
-endmodule
-
-
---- File: rtl/core/immediate_generator.sv ---
-// rtl/core/immediate_generator.sv
-`include "common/defines.svh"
-`include "common/immediate_types.svh"
-
-module immediate_generator (
-    input  logic [`INSTR_WIDTH-1:0] instr_i,
-    input  immediate_type_e         imm_type_sel_i, // Selects the type of immediate to generate
-    output logic [`DATA_WIDTH-1:0]  imm_ext_o      // Sign-extended immediate value
-);
-
-    logic [`DATA_WIDTH-1:0] imm_i_type;
-    logic [`DATA_WIDTH-1:0] imm_s_type;
-    logic [`DATA_WIDTH-1:0] imm_b_type;
-    logic [`DATA_WIDTH-1:0] imm_u_type;
-    logic [`DATA_WIDTH-1:0] imm_j_type;
-    logic [`DATA_WIDTH-1:0] imm_ishift_type;
-
-    // I-type immediate: instr[31:20] (12 bits)
-    assign imm_i_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:20]};
-
-    // S-type immediate: instr[31:25], instr[11:7] (12 bits)
-    assign imm_s_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:25], instr_i[11:7]};
-
-    // B-type immediate: {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0} (13 bits)
-    // Sign-extended from original bit 12 (instr[31]) of the conceptual 13-bit immediate.
-    assign imm_b_type = {{(`DATA_WIDTH-13){instr_i[31]}}, instr_i[31], instr_i[7], instr_i[30:25], instr_i[11:8], 1'b0};
-
-    // U-type immediate: {instr[31:12], 12'b0} (32 bits)
-    // Sign-extended from bit 31 of the effective 32-bit immediate. For RV64, this means sign-extend from bit 31 of the value.
-    assign imm_u_type = {{(`DATA_WIDTH-32){instr_i[31]}}, instr_i[31:12], 12'h000};
-
-    // J-type immediate: {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0} (21 bits)
-    // Sign-extended from original bit 20 (instr[31]) of the conceptual 21-bit immediate.
-    assign imm_j_type = {{(`DATA_WIDTH-21){instr_i[31]}}, instr_i[31], instr_i[19:12], instr_i[20], instr_i[30:21], 1'b0};
-    assign imm_ishift_type = `DATA_WIDTH'(instr_i[25:20]);
-
-    always_comb begin
-        case (imm_type_sel_i)
-            IMM_TYPE_I:    imm_ext_o = imm_i_type;
-            IMM_TYPE_S:    imm_ext_o = imm_s_type;
-            IMM_TYPE_B:    imm_ext_o = imm_b_type;
-            IMM_TYPE_U:    imm_ext_o = imm_u_type;
-            IMM_TYPE_J:    imm_ext_o = imm_j_type;
-            IMM_TYPE_ISHIFT: imm_ext_o = imm_ishift_type;
-            IMM_TYPE_NONE: imm_ext_o = `DATA_WIDTH'(0); // Or 'x if preferred for non-existent immediates
-            default:       imm_ext_o = `DATA_WIDTH'('x); // Should not happen with valid enum
-        endcase
-    end
-
-endmodule
-
-
---- File: rtl/core/control_unit.sv ---
-// rtl/core/control_unit.sv
-`include "common/defines.svh"
-`include "common/alu_defines.svh"
-`include "common/immediate_types.svh"
-`include "common/riscv_opcodes.svh"
-`include "common/control_signals_defines.svh" // New include
-
-module control_unit (
-    // Inputs from instruction
-    input  logic [6:0] op,
-    input  logic [2:0] funct3,
-    input  logic       funct7_5,
-
-    // Outputs: Control signals
-    output logic       reg_write_d_o,
-    output logic [1:0] result_src_d_o,
-    output logic       mem_write_d_o,
-    output logic       jump_d_o,
-    output logic       branch_d_o,
-    output logic       alu_src_d_o,      // Selects ALU operand B (Reg vs Imm)
-    output logic [`ALU_CONTROL_WIDTH-1:0] alu_control_d_o,
-    output immediate_type_e imm_type_d_o,
-    output logic [2:0] funct3_d_o,             // Pass funct3 for branch logic in EX & mem access type in MEM
-    output alu_a_src_sel_e op_a_sel_d_o,        // Selects ALU operand A source
-    output pc_target_src_sel_e pc_target_src_sel_d_o // Selects PC target source for EX
-);
-
-    // Pass funct3 directly as it's needed in later stages
-    assign funct3_d_o = funct3;
-
-    always_comb begin
-        // Initialize signals to a known "safe" or default state for each instruction type
-        reg_write_d_o   = 1'b0;
-        result_src_d_o  = 2'b00; // Default: Result from ALU
-        mem_write_d_o   = 1'b0;
-        jump_d_o        = 1'b0;
-        branch_d_o      = 1'b0;
-        alu_src_d_o     = 1'b0; // Default: ALU Operand B from Register File (rs2)
-        alu_control_d_o = `ALU_OP_ADD; // Default ALU operation
-        imm_type_d_o    = IMM_TYPE_NONE;
-        op_a_sel_d_o    = ALU_A_SRC_RS1; // Default
-        pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Default
-
-        case (op)
-            `OPCODE_LUI: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // Imm for OpB
-                imm_type_d_o    = IMM_TYPE_U;
-                op_a_sel_d_o    = ALU_A_SRC_ZERO; // ALU OpA = 0
-                alu_control_d_o = `ALU_OP_ADD;    // ALU = 0 + Imm
-                result_src_d_o  = 2'b00;
-            end
-            `OPCODE_AUIPC: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // Imm for OpB
-                imm_type_d_o    = IMM_TYPE_U;
-                op_a_sel_d_o    = ALU_A_SRC_PC;   // ALU OpA = PC
-                alu_control_d_o = `ALU_OP_ADD;    // ALU = PC + Imm
-                result_src_d_o  = 2'b00;
-            end
-            `OPCODE_JAL: begin
-                reg_write_d_o   = 1'b1;
-                jump_d_o        = 1'b1;
-                imm_type_d_o    = IMM_TYPE_J;
-                result_src_d_o  = 2'b10;      // rd = PC+4
-                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Target = PC + ImmJ
-                // ALU might be idle or used by a separate adder for PC+Imm.
-                // To keep ALU control consistent if it *were* used for target:
-                op_a_sel_d_o    = ALU_A_SRC_PC; // If ALU calculated PC+ImmJ
-                alu_src_d_o     = 1'b1;
-                alu_control_d_o = `ALU_OP_ADD;
-            end
-            `OPCODE_JALR: begin
-                reg_write_d_o   = 1'b1;
-                jump_d_o        = 1'b1;
-                alu_src_d_o     = 1'b1; // Imm for OpB
-                imm_type_d_o    = IMM_TYPE_I;
-                op_a_sel_d_o    = ALU_A_SRC_RS1;  // ALU OpA = RS1
-                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + Imm (for target calculation)
-                result_src_d_o  = 2'b10;      // rd = PC+4
-                pc_target_src_sel_d_o = PC_TARGET_SRC_ALU_JALR; // Target from ALU result & ~1
-            end
-            `OPCODE_BRANCH: begin
-                branch_d_o      = 1'b1;
-                alu_src_d_o     = 1'b0; // OpB = RS2 for comparison
-                op_a_sel_d_o    = ALU_A_SRC_RS1; // OpA = RS1 for comparison
-                imm_type_d_o    = IMM_TYPE_B;    // For PC + ImmB target calculation
-                reg_write_d_o   = 1'b0;
-                pc_target_src_sel_d_o = PC_TARGET_SRC_PC_PLUS_IMM; // Target is PC+ImmB
-                case (funct3)
-                    `FUNCT3_BEQ:  alu_control_d_o = `ALU_OP_SUB;
-                    `FUNCT3_BNE:  alu_control_d_o = `ALU_OP_SUB;
-                    `FUNCT3_BLT:  alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_BGE:  alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_BLTU: alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_BGEU: alu_control_d_o = `ALU_OP_SLTU;
-                    default:      alu_control_d_o = `ALU_OP_ADD; // Or some invalid op
-                endcase
-            end
-            `OPCODE_LOAD: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // Imm for OpB (offset)
-                imm_type_d_o    = IMM_TYPE_I;
-                op_a_sel_d_o    = ALU_A_SRC_RS1;  // OpA = RS1 (base address)
-                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + offset (address calculation)
-                result_src_d_o  = 2'b01;      // Result from Memory
-                mem_write_d_o   = 1'b0;
-            end
-            `OPCODE_STORE: begin
-                alu_src_d_o     = 1'b1; // Imm for OpB (offset)
-                imm_type_d_o    = IMM_TYPE_S;
-                op_a_sel_d_o    = ALU_A_SRC_RS1;  // OpA = RS1 (base address)
-                alu_control_d_o = `ALU_OP_ADD;    // ALU = RS1 + offset (address calculation)
-                mem_write_d_o   = 1'b1;
-                reg_write_d_o   = 1'b0;
-            end
-            `OPCODE_OP_IMM: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b1; // Imm for OpB
-                imm_type_d_o    = (funct3 == `FUNCT3_SLLI || funct3 == `FUNCT3_SRLI_SRAI) ? IMM_TYPE_ISHIFT : IMM_TYPE_I;
-                op_a_sel_d_o    = ALU_A_SRC_RS1;
-                result_src_d_o  = 2'b00;
-                case (funct3)
-                    `FUNCT3_ADDI:  alu_control_d_o = `ALU_OP_ADD;
-                    `FUNCT3_SLTI:  alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_SLTIU: alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_XORI:  alu_control_d_o = `ALU_OP_XOR;
-                    `FUNCT3_ORI:   alu_control_d_o = `ALU_OP_OR;
-                    `FUNCT3_ANDI:  alu_control_d_o = `ALU_OP_AND;
-                    `FUNCT3_SLLI:  alu_control_d_o = `ALU_OP_SLL;
-                    `FUNCT3_SRLI_SRAI: begin
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
-                        else                               alu_control_d_o = `ALU_OP_SRL;
-                    end
-                    default:       alu_control_d_o = `ALU_OP_ADD;
-                endcase
-            end
-            `OPCODE_OP: begin
-                reg_write_d_o   = 1'b1;
-                alu_src_d_o     = 1'b0; // OpB = RS2
-                op_a_sel_d_o    = ALU_A_SRC_RS1; // OpA = RS1
-                imm_type_d_o    = IMM_TYPE_NONE;
-                result_src_d_o  = 2'b00;
-                case (funct3)
-                    `FUNCT3_ADD_SUB: begin
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SUB;
-                        else                               alu_control_d_o = `ALU_OP_ADD;
-                    end
-                    `FUNCT3_SLL:   alu_control_d_o = `ALU_OP_SLL;
-                    `FUNCT3_SLT:   alu_control_d_o = `ALU_OP_SLT;
-                    `FUNCT3_SLTU:  alu_control_d_o = `ALU_OP_SLTU;
-                    `FUNCT3_XOR:   alu_control_d_o = `ALU_OP_XOR;
-                    `FUNCT3_SRL_SRA: begin
-                        if (funct7_5 == `FUNCT7_5_SUB_ALT) alu_control_d_o = `ALU_OP_SRA;
-                        else                               alu_control_d_o = `ALU_OP_SRL;
-                    end
-                    `FUNCT3_OR:    alu_control_d_o = `ALU_OP_OR;
-                    `FUNCT3_AND:   alu_control_d_o = `ALU_OP_AND;
-                    default:       alu_control_d_o = `ALU_OP_ADD;
-                endcase
-            end
-            default: begin // NOP / Unknown
-                // Default assignments from above cover this
-            end
-        endcase
-    end
-endmodule
-
-
---- File: rtl/core/instruction_memory.sv ---
-`include "common/defines.svh"
-
-module instruction_memory (
-    input  logic [`DATA_WIDTH-1:0] address,
-    output logic [`INSTR_WIDTH-1:0] instruction
-);
-
-    parameter string INSTR_MEM_INIT_FILE_PARAM = ""; // Parameter for memory initialization file
-    // چند مگابایت: 2^20 instructions * 4 bytes/instruction = 4MB
-    localparam ROM_SIZE = 2**20; // Number of instructions (1,048,576)
-    localparam ROM_ADDR_WIDTH = $clog2(ROM_SIZE); // Width of the index for mem (20 bits)
-
-    logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
-    logic [ROM_ADDR_WIDTH-1:0] mem_idx;
-
-    initial begin
-        // Default initialize all memory to NOP
-        for (int i = 0; i < ROM_SIZE; i++) begin
-            mem[i] = `NOP_INSTRUCTION;
-        end
-
-        if (INSTR_MEM_INIT_FILE_PARAM != "") begin
-            // If a file is specified, load it. This will override NOPs.
-            $readmemh(INSTR_MEM_INIT_FILE_PARAM, mem);
-            // $display("Instruction memory initialized from %s", INSTR_MEM_INIT_FILE_PARAM);
-        end else begin
-            // Fallback to hardcoded test instructions if no file is provided
-            // These will override the NOPs at specific locations.
-            mem[0] = 32'h00100093; // addi x1, x0, 1
-            mem[1] = 32'h00200113; // addi x2, x0, 2
-            mem[2] = 32'h00308193; // addi x3, x1, 3
-            mem[3] = 32'h00110213; // addi x4, x2, 1
-        end
-    end
-
-    assign mem_idx = address[ROM_ADDR_WIDTH+2-1:2];
-    assign instruction = (mem_idx < ROM_SIZE) ?
-                         mem[mem_idx] :
-                         `NOP_INSTRUCTION;
-
-endmodule
-
-
---- File: rtl/core/decode.sv ---
-// rtl/core/decode.sv
-`include "common/pipeline_types.svh"
-`include "common/riscv_opcodes.svh" // For opcode/funct defines used in submodules
-
-module decode (
-    input  logic clk,
-    input  logic rst_n,
-
-    // Input from Fetch (latched by IF/ID register in pipeline.sv)
-    input  if_id_data_t     if_id_data_i,
-
-    // Input from Writeback stage for Register File write
-    input  rf_write_data_t  writeback_data_i,
-
-    // Output to Execute (to be latched by ID/EX register in pipeline.sv)
-    output id_ex_data_t     id_ex_data_o,
-
-    // Outputs for Hazard Unit (direct from instruction)
-    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_o,
-    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_o
-    // rd_addr_d_o is part of id_ex_data_o.rd_addr
-);
-
-    // Instruction fields extracted from if_id_data_i.instr
-    logic [6:0] opcode;
-    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_instr;
-    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_instr;
-    logic [`REG_ADDR_WIDTH-1:0] rd_addr_instr;
-    logic [2:0] funct3_instr;
-    logic       funct7_5_instr;
-
-    // Intermediate signals from submodules
-    immediate_type_e imm_type_sel_internal;
-    logic [`DATA_WIDTH-1:0] rs1_data_from_rf;
-    logic [`DATA_WIDTH-1:0] rs2_data_from_rf;
-    logic [`DATA_WIDTH-1:0] imm_ext_internal;
-
-    // Decompose instruction from the input structure
-    assign opcode         = if_id_data_i.instr[6:0];
-    assign rd_addr_instr  = if_id_data_i.instr[11:7];
-    assign funct3_instr   = if_id_data_i.instr[14:12];
-    assign rs1_addr_instr = if_id_data_i.instr[19:15];
-    assign rs2_addr_instr = if_id_data_i.instr[24:20];
-    assign funct7_5_instr = if_id_data_i.instr[30];
-
-    // Control Unit instance
-    control_unit u_control_unit (
-        .op                    (opcode),
-        .funct3                (funct3_instr),
-        .funct7_5              (funct7_5_instr),
-        .reg_write_d_o         (id_ex_data_o.reg_write),
-        .result_src_d_o        (id_ex_data_o.result_src),
-        .mem_write_d_o         (id_ex_data_o.mem_write),
-        .jump_d_o              (id_ex_data_o.jump),
-        .branch_d_o            (id_ex_data_o.branch),
-        .alu_src_d_o           (id_ex_data_o.alu_src),
-        .alu_control_d_o       (id_ex_data_o.alu_control),
-        .imm_type_d_o          (imm_type_sel_internal),
-        .funct3_d_o            (id_ex_data_o.funct3), // Directly passes funct3_instr
-        .op_a_sel_d_o          (id_ex_data_o.op_a_sel),
-        .pc_target_src_sel_d_o (id_ex_data_o.pc_target_src_sel)
-    );
-
-    // Register File instance
-    register_file u_register_file (
-        .clk               (clk),
-        .rst_n             (rst_n),
-        .rs1_addr_i        (rs1_addr_instr),
-        .rs1_data_o        (rs1_data_from_rf),
-        .rs2_addr_i        (rs2_addr_instr),
-        .rs2_data_o        (rs2_data_from_rf),
-        .rd_write_en_wb_i  (writeback_data_i.reg_write_en),
-        .rd_addr_wb_i      (writeback_data_i.rd_addr),
-        .rd_data_wb_i      (writeback_data_i.result_to_rf)
-    );
-
-    // Immediate Generator instance
-    immediate_generator u_immediate_generator (
-        .instr_i           (if_id_data_i.instr),
-        .imm_type_sel_i    (imm_type_sel_internal),
-        .imm_ext_o         (imm_ext_internal)
-    );
-
-    // Assign data fields to the output structure
-    // PC and PC+4 values are passed through from IF/ID stage data
-    assign id_ex_data_o.pc         = if_id_data_i.pc;
-    assign id_ex_data_o.pc_plus_4  = if_id_data_i.pc_plus_4;
-
-    // Register data from RF
-    assign id_ex_data_o.rs1_data   = rs1_data_from_rf;
-    assign id_ex_data_o.rs2_data   = rs2_data_from_rf;
-
-    // Extended immediate value
-    assign id_ex_data_o.imm_ext    = imm_ext_internal;
-
-    // Register addresses (rs1_addr and rs2_addr are also output separately for Hazard Unit)
-    assign id_ex_data_o.rs1_addr   = rs1_addr_instr;
-    assign id_ex_data_o.rs2_addr   = rs2_addr_instr;
-    assign id_ex_data_o.rd_addr    = rd_addr_instr;
-
-    // Outputs for Hazard Unit (direct from instruction fields)
-    assign rs1_addr_d_o = rs1_addr_instr;
-    assign rs2_addr_d_o = rs2_addr_instr;
-
-endmodule
-
-
 --- File: rtl/core/fetch.sv ---
-// rtl/core/fetch.sv
 `include "common/pipeline_types.svh"
 
 module fetch #(
-    parameter string INSTR_MEM_INIT_FILE_PARAM = "", // Parameter for instruction memory init file
-    parameter logic [`DATA_WIDTH-1:0] PC_INIT_VALUE_PARAM = `PC_RESET_VALUE // Parameter for initial PC value
+    parameter string INSTR_MEM_INIT_FILE_PARAM = "",
+    parameter logic [`DATA_WIDTH-1:0] PC_INIT_VALUE_PARAM = `PC_RESET_VALUE
 )(
     input  logic clk,
     input  logic rst_n,
-
-    // Control signals
     input  logic                       stall_f_i,
     input  logic                       pc_src_e_i,
     input  logic [`DATA_WIDTH-1:0]     pc_target_e_i,
@@ -1217,7 +589,7 @@ module fetch #(
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pc_reg <= PC_INIT_VALUE_PARAM; // Use parameterized reset value
+            pc_reg <= PC_INIT_VALUE_PARAM;
         end else if (!stall_f_i) begin
             pc_reg <= pc_next;
         end
@@ -1230,74 +602,399 @@ module fetch #(
 endmodule
 
 
---- File: rtl/core/alu.sv ---
-// rtl/core/alu.sv
-`include "common/defines.svh"
-`include "common/alu_defines.svh" // Will use new defines
+--- File: rtl/core/writeback_stage.sv ---
+`include "common/pipeline_types.svh"
 
-module alu (
-    input  logic [`DATA_WIDTH-1:0]     operand_a,
-    input  logic [`DATA_WIDTH-1:0]     operand_b,
-    input  logic [`ALU_CONTROL_WIDTH-1:0] alu_control, // Unified control signal
-    output logic [`DATA_WIDTH-1:0]     result,
-    output logic                       zero_flag
+module writeback_stage (
+    input  mem_wb_data_t           mem_wb_data_i,
+    output rf_write_data_t         rf_write_data_o
 );
-
-    logic [`DATA_WIDTH-1:0] result_comb;
-    logic [5:0]             shift_amount; // For RV64, shift by lower 6 bits of operand_b
-
-    assign shift_amount = operand_b[5:0];
+    logic [`DATA_WIDTH-1:0] result_selected_for_rf;
 
     always_comb begin
-        result_comb = {`DATA_WIDTH{1'bx}}; // Default to 'x'
-
-        case (alu_control)
-            `ALU_OP_ADD:  result_comb = operand_a + operand_b;
-            `ALU_OP_SUB:  result_comb = operand_a - operand_b;
-            `ALU_OP_SLL:  result_comb = operand_a << shift_amount;
-            `ALU_OP_SLT:  result_comb = ($signed(operand_a) < $signed(operand_b)) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
-            `ALU_OP_SLTU: result_comb = (operand_a < operand_b) ? {{`DATA_WIDTH-1{1'b0}}, 1'b1} : {`DATA_WIDTH{1'b0}};
-            `ALU_OP_XOR:  result_comb = operand_a ^ operand_b;
-            `ALU_OP_SRL:  result_comb = operand_a >> shift_amount;
-            `ALU_OP_SRA:  result_comb = $signed(operand_a) >>> shift_amount;
-            `ALU_OP_OR:   result_comb = operand_a | operand_b;
-            `ALU_OP_AND:  result_comb = operand_a & operand_b;
-            // `ALU_OP_PASS_B: result_comb = operand_b; // If we had this explicit op
-            default:      result_comb = {`DATA_WIDTH{1'bx}}; // Undefined operation
+        case (mem_wb_data_i.result_src)
+            2'b00:  result_selected_for_rf = mem_wb_data_i.alu_result;
+            2'b01:  result_selected_for_rf = mem_wb_data_i.read_data_mem;
+            2'b10:  result_selected_for_rf = mem_wb_data_i.pc_plus_4;
+            default: result_selected_for_rf = `DATA_WIDTH'('x);
         endcase
     end
 
-    assign result = result_comb;
-    assign zero_flag = (result_comb == {`DATA_WIDTH{1'b0}});
+    assign rf_write_data_o.reg_write_en = mem_wb_data_i.reg_write;
+    assign rf_write_data_o.rd_addr      = mem_wb_data_i.rd_addr;
+    assign rf_write_data_o.result_to_rf = result_selected_for_rf;
+
+endmodule
+
+
+--- File: rtl/core/data_memory.sv ---
+
+`include "common/defines.svh"
+`include "common/riscv_opcodes.svh"
+
+module data_memory #(
+    parameter string DATA_MEM_INIT_FILE = ""
+)(
+    input  logic clk,
+    input  logic rst_n,
+
+    input  logic [`DATA_WIDTH-1:0]     addr_i,
+    input  logic [`DATA_WIDTH-1:0]     write_data_i,
+    input  logic                       mem_write_en_i,
+    input  logic [2:0]                 funct3_i,
+
+    output logic [`DATA_WIDTH-1:0]     read_data_o
+);
+
+    localparam MEM_ADDR_BITS = 10;
+    localparam MEM_SIZE_BYTES = 1 << MEM_ADDR_BITS;
+    localparam MEM_ADDR_WIDTH = $clog2(MEM_SIZE_BYTES);
+
+    logic [7:0] mem [MEM_SIZE_BYTES-1:0];
+    logic [`DATA_WIDTH-1:0] aligned_word_read_comb;
+    logic [`DATA_WIDTH-1:0] temp_read_data_comb;
+
+    always_comb begin
+        temp_read_data_comb = `DATA_WIDTH'('x);
+        aligned_word_read_comb = `DATA_WIDTH'('0);
+
+        if (addr_i < MEM_SIZE_BYTES) begin
+            logic [2:0] byte_offset_in_word = addr_i[2:0];
+            logic [`DATA_WIDTH-1:0] current_aligned_word;
+
+            for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
+                if (((addr_i & ~((`DATA_WIDTH/8) - 1)) + `DATA_WIDTH'(i)) < MEM_SIZE_BYTES) begin
+                    current_aligned_word[(i*8) +: 8] = mem[(addr_i & ~((`DATA_WIDTH/8) - 1)) + `DATA_WIDTH'(i)];
+                end else begin
+                    current_aligned_word[(i*8) +: 8] = 8'h00;
+                end
+            end
+            aligned_word_read_comb = current_aligned_word;
+
+            case (funct3_i)
+                `FUNCT3_LB: begin
+                    temp_read_data_comb = {{(`DATA_WIDTH-8){aligned_word_read_comb[byte_offset_in_word*8 + 7]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 8]};
+                end
+                `FUNCT3_LH: begin
+                    temp_read_data_comb = {{(`DATA_WIDTH-16){aligned_word_read_comb[byte_offset_in_word*8 + 15]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 16]};
+                end
+                `FUNCT3_LW: begin
+                    temp_read_data_comb = {{(`DATA_WIDTH-32){aligned_word_read_comb[byte_offset_in_word*8 + 31]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 32]};
+                end
+                `FUNCT3_LD: begin
+                    temp_read_data_comb = aligned_word_read_comb;
+                end
+                `FUNCT3_LBU: begin
+                    temp_read_data_comb = {{(`DATA_WIDTH-8){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 8]};
+                end
+                `FUNCT3_LHU: begin
+                    temp_read_data_comb = {{(`DATA_WIDTH-16){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 16]};
+                end
+                `FUNCT3_LWU: begin
+                    temp_read_data_comb = {{(`DATA_WIDTH-32){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 32]};
+                end
+                default: temp_read_data_comb = `DATA_WIDTH'('x);
+            endcase
+        end else begin
+             temp_read_data_comb = `DATA_WIDTH'('x);
+        end
+    end
+    assign read_data_o = temp_read_data_comb;
+
+    always_ff @(posedge clk) begin
+        if (mem_write_en_i) begin
+
+            case (funct3_i)
+                `FUNCT3_SB: begin
+                    if (addr_i < MEM_SIZE_BYTES) mem[addr_i] = write_data_i[7:0];
+                end
+                `FUNCT3_SH: begin
+                    if (addr_i < MEM_SIZE_BYTES - 1) begin
+                        mem[addr_i]   <= write_data_i[7:0];
+                        mem[addr_i+1] <= write_data_i[15:8];
+                    end
+                end
+                `FUNCT3_SW: begin
+                    if (addr_i < MEM_SIZE_BYTES - 3) begin
+                        for (int i = 0; i < 4; i++) begin
+                            mem[addr_i+i] <= write_data_i[i*8 +: 8];
+                        end
+                    end
+                end
+                `FUNCT3_SD: begin
+                     if (addr_i < MEM_SIZE_BYTES - 7) begin
+                        for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
+                            mem[addr_i + `DATA_WIDTH'(i)] <= write_data_i[i*8 +: 8];
+                        end
+                    end
+                end
+                default: ;
+            endcase
+        end
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int i = 0; i < MEM_SIZE_BYTES; i++) begin
+                mem[i] = 8'h00;
+            end
+        end
+    end
+
+    initial begin
+        if (DATA_MEM_INIT_FILE != "") begin
+            $readmemh(DATA_MEM_INIT_FILE, mem);
+        end
+    end
+
+endmodule
+
+
+--- File: rtl/core/execute.sv ---
+`include "common/pipeline_types.svh"
+`include "common/riscv_opcodes.svh"
+
+module execute (
+    input  id_ex_data_t            id_ex_data_i,
+    input  logic [`DATA_WIDTH-1:0] forward_data_mem_i,
+    input  logic [`DATA_WIDTH-1:0] forward_data_wb_i,
+    input  logic [1:0]             forward_a_e_i,
+    input  logic [1:0]             forward_b_e_i,
+
+    output ex_mem_data_t           ex_mem_data_o,
+    output logic                   pc_src_o,
+    output logic [`DATA_WIDTH-1:0] pc_target_addr_o
+);
+
+    logic [`DATA_WIDTH-1:0] alu_operand_a_mux_out;
+    logic [`DATA_WIDTH-1:0] alu_operand_a_final;
+    logic [`DATA_WIDTH-1:0] alu_operand_b_mux_out;
+    logic [`DATA_WIDTH-1:0] alu_operand_b_final;
+    logic [`DATA_WIDTH-1:0] write_data_e;
+    logic [`DATA_WIDTH-1:0] alu_result_internal;
+    logic                   alu_zero_flag_internal;
+
+    always_comb begin
+        case (id_ex_data_i.op_a_sel)
+            ALU_A_SRC_RS1:  alu_operand_a_mux_out = id_ex_data_i.rs1_data;
+            ALU_A_SRC_PC:   alu_operand_a_mux_out = id_ex_data_i.pc;
+            ALU_A_SRC_ZERO: alu_operand_a_mux_out = `DATA_WIDTH'(0);
+            default:        alu_operand_a_mux_out = id_ex_data_i.rs1_data;
+        endcase
+    end
+
+    always_comb begin
+        case (forward_a_e_i)
+            2'b00:  alu_operand_a_final = alu_operand_a_mux_out;
+            2'b10:  alu_operand_a_final = forward_data_mem_i;
+            2'b01:  alu_operand_a_final = forward_data_wb_i;
+            default: alu_operand_a_final = alu_operand_a_mux_out;
+        endcase
+    end
+
+    assign alu_operand_b_mux_out = id_ex_data_i.alu_src ? id_ex_data_i.imm_ext : id_ex_data_i.rs2_data;
+
+    always_comb begin
+        case (forward_b_e_i)
+            2'b00:  write_data_e = alu_operand_b_mux_out;
+            2'b10:  write_data_e = forward_data_mem_i;
+            2'b01:  write_data_e = forward_data_wb_i;
+            default: write_data_e = alu_operand_b_mux_out;
+        endcase
+        if (id_ex_data_i.alu_src) begin
+            alu_operand_b_final = id_ex_data_i.imm_ext;
+        end else begin
+            alu_operand_b_final = write_data_e;
+        end
+    end
+
+    alu u_alu (
+        .operand_a   (alu_operand_a_final),
+        .operand_b   (alu_operand_b_final),
+        .alu_control (id_ex_data_i.alu_control),
+        .result      (alu_result_internal),
+        .zero_flag   (alu_zero_flag_internal)
+    );
+
+    logic [`DATA_WIDTH-1:0] target_addr_pc_plus_imm;
+    logic [`DATA_WIDTH-1:0] target_addr_alu_jalr_masked;
+
+    assign target_addr_pc_plus_imm = id_ex_data_i.pc + id_ex_data_i.imm_ext;
+    assign target_addr_alu_jalr_masked = alu_result_internal & ~(`DATA_WIDTH'(1));
+    assign pc_target_addr_o = (id_ex_data_i.pc_target_src_sel == PC_TARGET_SRC_ALU_JALR) ?
+                               target_addr_alu_jalr_masked : target_addr_pc_plus_imm;
+
+    logic take_branch;
+    always_comb begin
+        take_branch = 1'b0;
+        if (id_ex_data_i.branch) begin
+            case (id_ex_data_i.funct3)
+                `FUNCT3_BEQ:  take_branch = alu_zero_flag_internal;
+                `FUNCT3_BNE:  take_branch = ~alu_zero_flag_internal;
+                `FUNCT3_BLT:  take_branch = alu_result_internal[0];
+                `FUNCT3_BGE:  take_branch = ~alu_result_internal[0];
+                `FUNCT3_BLTU: take_branch = alu_result_internal[0];
+                `FUNCT3_BGEU: take_branch = ~alu_result_internal[0];
+                default:      take_branch = 1'b0;
+            endcase
+        end
+    end
+
+    assign pc_src_o = (id_ex_data_i.jump) || (id_ex_data_i.branch && take_branch);
+    assign ex_mem_data_o.reg_write  = id_ex_data_i.reg_write;
+    assign ex_mem_data_o.result_src = id_ex_data_i.result_src;
+    assign ex_mem_data_o.mem_write  = id_ex_data_i.mem_write;
+    assign ex_mem_data_o.funct3     = id_ex_data_i.funct3;
+    assign ex_mem_data_o.alu_result = alu_result_internal;
+    assign ex_mem_data_o.rs2_data   = write_data_e;
+    assign ex_mem_data_o.rd_addr    = id_ex_data_i.rd_addr;
+    assign ex_mem_data_o.pc_plus_4  = id_ex_data_i.pc_plus_4;
+
+endmodule
+
+
+--- File: rtl/core/decode.sv ---
+`include "common/pipeline_types.svh"
+`include "common/riscv_opcodes.svh"
+
+module decode (
+    input  logic clk,
+    input  logic rst_n,
+    input  if_id_data_t     if_id_data_i,
+    input  rf_write_data_t  writeback_data_i,
+
+    output id_ex_data_t     id_ex_data_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs1_addr_d_o,
+    output logic [`REG_ADDR_WIDTH-1:0] rs2_addr_d_o
+);
+
+    logic [6:0] opcode;
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_instr;
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_instr;
+    logic [`REG_ADDR_WIDTH-1:0] rd_addr_instr;
+    logic [2:0] funct3_instr;
+    logic       funct7_5_instr;
+
+    immediate_type_e imm_type_sel_internal;
+    logic [`DATA_WIDTH-1:0] rs1_data_from_rf;
+    logic [`DATA_WIDTH-1:0] rs2_data_from_rf;
+    logic [`DATA_WIDTH-1:0] imm_ext_internal;
+
+    assign opcode         = if_id_data_i.instr[6:0];
+    assign rd_addr_instr  = if_id_data_i.instr[11:7];
+    assign funct3_instr   = if_id_data_i.instr[14:12];
+    assign rs1_addr_instr = if_id_data_i.instr[19:15];
+    assign rs2_addr_instr = if_id_data_i.instr[24:20];
+    assign funct7_5_instr = if_id_data_i.instr[30];
+
+    control_unit u_control_unit (
+        .op                    (opcode),
+        .funct3                (funct3_instr),
+        .funct7_5              (funct7_5_instr),
+        .reg_write_d_o         (id_ex_data_o.reg_write),
+        .result_src_d_o        (id_ex_data_o.result_src),
+        .mem_write_d_o         (id_ex_data_o.mem_write),
+        .jump_d_o              (id_ex_data_o.jump),
+        .branch_d_o            (id_ex_data_o.branch),
+        .alu_src_d_o           (id_ex_data_o.alu_src),
+        .alu_control_d_o       (id_ex_data_o.alu_control),
+        .imm_type_d_o          (imm_type_sel_internal),
+        .funct3_d_o            (id_ex_data_o.funct3),
+        .op_a_sel_d_o          (id_ex_data_o.op_a_sel),
+        .pc_target_src_sel_d_o (id_ex_data_o.pc_target_src_sel)
+    );
+
+    register_file u_register_file (
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .rs1_addr_i        (rs1_addr_instr),
+        .rs1_data_o        (rs1_data_from_rf),
+        .rs2_addr_i        (rs2_addr_instr),
+        .rs2_data_o        (rs2_data_from_rf),
+        .rd_write_en_wb_i  (writeback_data_i.reg_write_en),
+        .rd_addr_wb_i      (writeback_data_i.rd_addr),
+        .rd_data_wb_i      (writeback_data_i.result_to_rf)
+    );
+
+    immediate_generator u_immediate_generator (
+        .instr_i           (if_id_data_i.instr),
+        .imm_type_sel_i    (imm_type_sel_internal),
+        .imm_ext_o         (imm_ext_internal)
+    );
+
+    assign id_ex_data_o.pc         = if_id_data_i.pc;
+    assign id_ex_data_o.pc_plus_4  = if_id_data_i.pc_plus_4;
+    assign id_ex_data_o.rs1_data   = rs1_data_from_rf;
+    assign id_ex_data_o.rs2_data   = rs2_data_from_rf;
+    assign id_ex_data_o.imm_ext    = imm_ext_internal;
+    assign id_ex_data_o.rs1_addr   = rs1_addr_instr;
+    assign id_ex_data_o.rs2_addr   = rs2_addr_instr;
+    assign id_ex_data_o.rd_addr    = rd_addr_instr;
+    assign rs1_addr_d_o = rs1_addr_instr;
+    assign rs2_addr_d_o = rs2_addr_instr;
+
+endmodule
+
+
+--- File: rtl/core/immediate_generator.sv ---
+`include "common/defines.svh"
+`include "common/immediate_types.svh"
+
+module immediate_generator (
+    input  logic [`INSTR_WIDTH-1:0] instr_i,
+    input  immediate_type_e         imm_type_sel_i,
+    output logic [`DATA_WIDTH-1:0]  imm_ext_o
+);
+
+    logic [`DATA_WIDTH-1:0] imm_i_type;
+    logic [`DATA_WIDTH-1:0] imm_s_type;
+    logic [`DATA_WIDTH-1:0] imm_b_type;
+    logic [`DATA_WIDTH-1:0] imm_u_type;
+    logic [`DATA_WIDTH-1:0] imm_j_type;
+    logic [`DATA_WIDTH-1:0] imm_ishift_type;
+
+    assign imm_i_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:20]};
+    assign imm_s_type = {{(`DATA_WIDTH-12){instr_i[31]}}, instr_i[31:25], instr_i[11:7]};
+    assign imm_b_type = {{(`DATA_WIDTH-13){instr_i[31]}}, instr_i[31], instr_i[7], instr_i[30:25], instr_i[11:8], 1'b0};
+    assign imm_u_type = {{(`DATA_WIDTH-32){instr_i[31]}}, instr_i[31:12], 12'h000};
+    assign imm_j_type = {{(`DATA_WIDTH-21){instr_i[31]}}, instr_i[31], instr_i[19:12], instr_i[20], instr_i[30:21], 1'b0};
+    assign imm_ishift_type = `DATA_WIDTH'(instr_i[25:20]);
+
+    always_comb begin
+        case (imm_type_sel_i)
+            IMM_TYPE_I:    imm_ext_o = imm_i_type;
+            IMM_TYPE_S:    imm_ext_o = imm_s_type;
+            IMM_TYPE_B:    imm_ext_o = imm_b_type;
+            IMM_TYPE_U:    imm_ext_o = imm_u_type;
+            IMM_TYPE_J:    imm_ext_o = imm_j_type;
+            IMM_TYPE_ISHIFT: imm_ext_o = imm_ishift_type;
+            IMM_TYPE_NONE: imm_ext_o = `DATA_WIDTH'(0);
+            default:       imm_ext_o = `DATA_WIDTH'('x);
+        endcase
+    end
 
 endmodule
 
 
 --- File: rtl/core/register_file.sv ---
-// rtl/core/register_file.sv
 `include "common/defines.svh"
 
 module register_file (
-    input  logic clk, // clk for synchronous write
+    input  logic clk,
     input  logic rst_n,
-
-    // Read Port 1 (combinational)
     input  logic [`REG_ADDR_WIDTH-1:0] rs1_addr_i,
     output logic [`DATA_WIDTH-1:0]     rs1_data_o,
 
-    // Read Port 2 (combinational)
     input  logic [`REG_ADDR_WIDTH-1:0] rs2_addr_i,
     output logic [`DATA_WIDTH-1:0]     rs2_data_o,
 
-    // Write Port (from Writeback stage) - Synchronous
     input  logic                       rd_write_en_wb_i,
     input  logic [`REG_ADDR_WIDTH-1:0] rd_addr_wb_i,
     input  logic [`DATA_WIDTH-1:0]     rd_data_wb_i
 );
 
-    logic [`DATA_WIDTH-1:0] regs[31:0] /* verilator public */; // Make regs public for easier C++ TB access
+    logic [`DATA_WIDTH-1:0] regs[31:0] /* verilator public */;
 
-    // Synchronous write on positive clock edge
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (int i = 0; i < 32; i++) begin
@@ -1310,18 +1007,12 @@ module register_file (
         end
     end
 
-    // Combinational Read Logic
-    // Read Port 1: Data from register array
     logic [`DATA_WIDTH-1:0] rs1_data_from_array;
     assign rs1_data_from_array = (rs1_addr_i == `REG_ADDR_WIDTH'(0)) ? `DATA_WIDTH'(0) : regs[rs1_addr_i];
 
-    // Read Port 2: Data from register array
     logic [`DATA_WIDTH-1:0] rs2_data_from_array;
     assign rs2_data_from_array = (rs2_addr_i == `REG_ADDR_WIDTH'(0)) ? `DATA_WIDTH'(0) : regs[rs2_addr_i];
 
-    // Bypass logic: if reading the same register being written from WB, use WB data.
-    // This handles the case where an instruction in ID reads a register
-    // that is being written by an instruction in WB in the same clock cycle.
     assign rs1_data_o = (rd_write_en_wb_i && (rd_addr_wb_i != 0) && (rs1_addr_i == rd_addr_wb_i))
                         ? rd_data_wb_i
                         : rs1_data_from_array;
@@ -1339,8 +1030,45 @@ module register_file (
 endmodule
 
 
+--- File: rtl/core/instruction_memory.sv ---
+`include "common/defines.svh"
+
+module instruction_memory (
+    input  logic [`DATA_WIDTH-1:0] address,
+    output logic [`INSTR_WIDTH-1:0] instruction
+);
+
+    parameter string INSTR_MEM_INIT_FILE_PARAM = "";
+    localparam ROM_SIZE = 2**20;
+    localparam ROM_ADDR_WIDTH = $clog2(ROM_SIZE);
+
+    logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
+    logic [ROM_ADDR_WIDTH-1:0] mem_idx;
+
+    initial begin
+        for (int i = 0; i < ROM_SIZE; i++) begin
+            mem[i] = `NOP_INSTRUCTION;
+        end
+
+        if (INSTR_MEM_INIT_FILE_PARAM != "") begin
+            $readmemh(INSTR_MEM_INIT_FILE_PARAM, mem);
+        end else begin
+            mem[0] = 32'h00100093; // addi x1, x0, 1
+            mem[1] = 32'h00200113; // addi x2, x0, 2
+            mem[2] = 32'h00308193; // addi x3, x1, 3
+            mem[3] = 32'h00110213; // addi x4, x2, 1
+        end
+    end
+
+    assign mem_idx = address[ROM_ADDR_WIDTH+2-1:2];
+    assign instruction = (mem_idx < ROM_SIZE) ?
+                         mem[mem_idx] :
+                         `NOP_INSTRUCTION;
+
+endmodule
+
+
 --- File: rtl/pipeline.sv ---
-// rtl/pipeline.sv
 `default_nettype none
 `timescale 1ns/1ps
 
@@ -1375,7 +1103,7 @@ module pipeline #(
     logic                   pc_src_ex_o;
     logic [`DATA_WIDTH-1:0] pc_target_ex_o;
 
-    // Individual hazard control signals from hazard_unit
+    // For hazard_unit
     logic [1:0] forward_a_ex_signal;
     logic [1:0] forward_b_ex_signal;
     logic       stall_fetch_signal;
@@ -1383,8 +1111,8 @@ module pipeline #(
     logic       flush_decode_signal;
     logic       flush_execute_signal;
 
-    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_signal; // from decode stage
-    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_signal; // from decode stage
+    logic [`REG_ADDR_WIDTH-1:0] rs1_addr_id_signal;
+    logic [`REG_ADDR_WIDTH-1:0] rs2_addr_id_signal;
 
     fetch #(
         .INSTR_MEM_INIT_FILE_PARAM(INSTR_MEM_INIT_FILE),
@@ -1392,7 +1120,7 @@ module pipeline #(
     ) u_fetch (
         .clk                (clk),
         .rst_n              (rst_n),
-        .stall_f_i          (stall_fetch_signal), // Connect to hazard unit output
+        .stall_f_i          (stall_fetch_signal),
         .pc_src_e_i         (pc_src_ex_o),
         .pc_target_e_i      (pc_target_ex_o),
         .if_id_data_o       (if_id_data_from_fetch)
@@ -1404,16 +1132,16 @@ module pipeline #(
         .if_id_data_i       (if_id_data_q),
         .writeback_data_i   (rf_write_data_from_wb),
         .id_ex_data_o       (id_ex_data_from_decode),
-        .rs1_addr_d_o       (rs1_addr_id_signal), // Output for hazard unit
-        .rs2_addr_d_o       (rs2_addr_id_signal)  // Output for hazard unit
+        .rs1_addr_d_o       (rs1_addr_id_signal),
+        .rs2_addr_d_o       (rs2_addr_id_signal)
     );
 
     execute u_execute (
         .id_ex_data_i       (id_ex_data_q),
         .forward_data_mem_i (ex_mem_data_q.alu_result),
         .forward_data_wb_i  (rf_write_data_from_wb.result_to_rf),
-        .forward_a_e_i      (forward_a_ex_signal), // Connect to hazard unit output
-        .forward_b_e_i      (forward_b_ex_signal), // Connect to hazard unit output
+        .forward_a_e_i      (forward_a_ex_signal),
+        .forward_b_e_i      (forward_b_ex_signal),
         .ex_mem_data_o      (ex_mem_data_from_execute),
         .pc_src_o           (pc_src_ex_o),
         .pc_target_addr_o   (pc_target_ex_o)
@@ -1433,7 +1161,6 @@ module pipeline #(
         .rf_write_data_o    (rf_write_data_from_wb)
     );
 
-    // Instantiate new hazard_unit
     hazard_unit u_hazard_unit (
         .rs1_addr_ex_i    (id_ex_data_q.rs1_addr),
         .rs2_addr_ex_i    (id_ex_data_q.rs2_addr),
@@ -1461,9 +1188,9 @@ module pipeline #(
 
     // IF/ID Register Logic
     always_comb begin
-        if (flush_decode_signal) begin // Use signal from hazard_unit
+        if (flush_decode_signal) begin
             if_id_data_d = NOP_IF_ID_DATA;
-        end else if (stall_decode_signal) begin // Use signal from hazard_unit
+        end else if (stall_decode_signal) begin
             if_id_data_d = if_id_data_q; // Keep current data
         end else begin
             if_id_data_d = if_id_data_from_fetch; // Latch new data
@@ -1481,7 +1208,7 @@ module pipeline #(
 
     // ID/EX Register Logic
     always_comb begin
-        if (flush_execute_signal) begin // Use signal from hazard_unit
+        if (flush_execute_signal) begin
             id_ex_data_d = NOP_ID_EX_DATA;
         end else begin
             id_ex_data_d = id_ex_data_from_decode;
@@ -1503,8 +1230,6 @@ module pipeline #(
         if (!rst_n) begin
             ex_mem_data_q <= NOP_EX_MEM_DATA;
         end else begin
-            // EX/MEM register is not flushed by typical hazard conditions like load-use or branch.
-            // It latches the (potentially NOP'd) output from ID/EX.
             ex_mem_data_q <= ex_mem_data_d;
         end
     end
@@ -1519,639 +1244,12 @@ module pipeline #(
         end
     end
 
-    assign debug_pc_f         = if_id_data_from_fetch.pc; // or if_id_data_q.pc depending on what you want to see
-    assign debug_instr_f      = if_id_data_from_fetch.instr; // or if_id_data_q.instr
+    assign debug_pc_f         = if_id_data_from_fetch.pc;
+    assign debug_instr_f      = if_id_data_from_fetch.instr;
     assign debug_reg_write_wb = rf_write_data_from_wb.reg_write_en;
     assign debug_rd_addr_wb   = rf_write_data_from_wb.rd_addr;
     assign debug_result_w     = rf_write_data_from_wb.result_to_rf;
 
 endmodule
-
-
---- File: tests/integration/addi_basic_instr.s ---
-.section .text
-.global _start
-
-_start:
-    addi x1, x0, 1
-    addi x2, x0, 5
-    sub x3, x2, x1
-    add x4, x2, x1
-    slti x5, x4, 10
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-
-
---- File: tests/integration/beq.s ---
-.section .text
-.global _start
-
-_start:
-    addi x1, x0, 1
-    addi x2, x0, 5
-    addi x3, x0, 5
-loop:
-    addi x1, x1, 1
-    beq x2, x3, loop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-
-
---- File: tests/integration/complex_expected.txt ---
-x
-x
-0000000000000001
-0000000000000001
-000000000000000a
-0000000000000005
-0000000000000005
-0000000000000002
-x
-0000000000000002
-x
-x
-0x0000000000010028
-x
-x
-0000000000000003
-x
-0000000000000003
-x
-x
-0x0000000000010028
-x
-x
-0000000000000004
-x
-0000000000000004
-x
-x
-0x0000000000010028
-x
-x
-0000000000000005
-x
-0000000000000005
-x
-x
-x
-x
-0x000000000001002c
-x
-x
-0x0000000000000000
-0x0000000000000001
-0x0000000000000001
-x
-x
-x
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-000000000000000000
-
-
---- File: tests/integration/jump_expected.txt ---
-x
-x
-0000000000000001
-0000000000000002
-000000000001000c
-x
-x
-0000000000000003
-000000000001000c
-x
-x
-0000000000000004
-000000000001000c
-x
-x
-0000000000000005
-000000000001000c
-x
-x
-
-
---- File: tests/integration/beq_expected.txt ---
-x
-x
-0000000000000001
-0000000000000005
-0000000000000005
-0000000000000002
-x
-x
-x
-0000000000000003
-x
-x
-x
-0000000000000004
-x
-x
-x
-0000000000000005
-x
-x
-x
-0000000000000006
-x
-x
-x
-
-
---- File: tests/integration/mem_expected.txt ---
-x
-x
-0000000000000007
-x
-0000000000000007
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-
-
---- File: tests/integration/jump.s ---
-.section .text
-.global _start
-
-_start:
-    addi x1, x0, 1
-loop:
-    addi x1, x1, 1
-    jal x4, loop
-    addi x3, x0, 7
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-
-
---- File: tests/integration/pipeline_tb.cpp ---
-// Файл: tests/integration/pipeline_tb.cpp
-#include "Vpipeline.h"
-#include "verilated_vcd_c.h"
-#include "verilated.h"
-
-#include <iostream>
-#include <fstream>
-#include <iomanip>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <cassert>
-
-// Макросы, определяемые CMake
-#ifndef PIPELINE_TEST_CASE_NAME_STR_RAW
-#error "PIPELINE_TEST_CASE_NAME_STR_RAW not defined! Pass it via CFLAGS from CMake."
-#endif
-
-#ifndef EXPECTED_WD3_FILE_PATH_STR_RAW
-#error "EXPECTED_WD3_FILE_PATH_STR_RAW not defined! Pass it via CFLAGS from CMake."
-#endif
-
-#ifndef NUM_CYCLES_TO_RUN
-#error "NUM_CYCLES_TO_RUN not defined! Pass it via CFLAGS from CMake."
-#endif
-
-// Вспомогательные макросы для превращения в строку
-#define STRINGIFY_HELPER(x) #x
-#define STRINGIFY(x) STRINGIFY_HELPER(x)
-
-// Глобальные переменные из макросов
-const std::string G_PIPELINE_TEST_CASE_NAME = STRINGIFY(PIPELINE_TEST_CASE_NAME_STR_RAW);
-const std::string G_EXPECTED_WD3_FILE_PATH = STRINGIFY(EXPECTED_WD3_FILE_PATH_STR_RAW);
-const int G_NUM_CYCLES_TO_RUN = NUM_CYCLES_TO_RUN;
-const uint64_t X_DEF = 0xFFFFFFFFFFFFFFFFUL;
-
-
-vluint64_t sim_time = 0;
-
-double sc_time_stamp() {
-    return sim_time;
-}
-
-// In C++, the top module instance is named 'top' by Verilator default
-// The Verilog module is 'pipeline'. So Vpipeline.h and Vpipeline class.
-// The input ports in Verilog `clk, rst_n` become `top->clk, top->rst_n`
-// The output ports in Verilog `debug_pc_f, ...` become `top->debug_pc_f, ...`
-void tick(Vpipeline* top, VerilatedVcdC* tfp) {
-    top->clk = 0; // Verilog `clk` input
-    top->eval();
-    if (tfp) tfp->dump(sim_time);
-    sim_time++;
-
-    top->clk = 1; // Verilog `clk` input
-    top->eval();
-    if (tfp) tfp->dump(sim_time);
-    sim_time++;
-}
-
-bool load_expected_wd3_values(const std::string& filepath, std::vector<uint64_t>& values, int expected_num_cycles) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        std::cerr << "ERROR: Could not open expected output file: " << filepath << std::endl;
-        return false;
-    }
-    std::string line;
-    int line_count = 0;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        try {
-            if (line == "X" || line == "x") {
-                values.push_back(X_DEF);
-            } else {
-                values.push_back(std::stoull(line, nullptr, 16));
-            }
-            line_count++;
-        } catch (const std::exception& e) {
-            std::cerr << "Error parsing hex value '" << line << "' at line " << (line_count + 1) << ": " << e.what() << std::endl;
-            return false;
-        }
-    }
-    file.close();
-    if (line_count < expected_num_cycles) {
-        std::cerr << "ERROR: Number of expected values (" << line_count
-                  << ") is less than NUM_CYCLES_TO_RUN (" << expected_num_cycles << ")." << std::endl;
-        std::cerr << "Please provide an expected value (or 'X' if no write) for each cycle." << std::endl;
-        return false;
-    }
-    if (line_count > expected_num_cycles) {
-         std::cerr << "Warning: Number of expected values (" << line_count
-                  << ") is greater than NUM_CYCLES_TO_RUN (" << expected_num_cycles << ")." << std::endl;
-    }
-    return true;
-}
-
-int main(int argc, char** argv) {
-    Verilated::commandArgs(argc, argv);
-    Vpipeline* top = new Vpipeline; // Instantiating the Verilog module 'pipeline'
-
-    Verilated::traceEverOn(true);
-    VerilatedVcdC* tfp = new VerilatedVcdC;
-    top->trace(tfp, 99);
-    std::string vcd_file_name = G_PIPELINE_TEST_CASE_NAME + "_pipeline_tb.vcd";
-    tfp->open(vcd_file_name.c_str());
-
-    std::cout << "Starting Pipeline Test Case: " << G_PIPELINE_TEST_CASE_NAME << std::endl;
-    std::cout << "Expected output file: " << G_EXPECTED_WD3_FILE_PATH << std::endl;
-    std::cout << "Number of cycles to run: " << G_NUM_CYCLES_TO_RUN << std::endl;
-
-    std::vector<uint64_t> expected_results_per_cycle;
-    if (!load_expected_wd3_values(G_EXPECTED_WD3_FILE_PATH, expected_results_per_cycle, G_NUM_CYCLES_TO_RUN)) {
-        if (tfp) tfp->close();
-        delete top;
-        return 1;
-    }
-
-    top->rst_n = 0; // Assert reset (active low)
-    for(int i=0; i<2; ++i) { // Hold reset for 2 cycles
-        tick(top, tfp);
-    }
-    top->rst_n = 1; // De-assert reset
-    tick(top, tfp); // One cycle for reset to propagate
-    std::cout << "Reset complete." << std::endl;
-
-    bool test_passed = true;
-
-    std::cout << "\nCycle | PC_F     | Instr_F  | RegWr_WB | RdAddr_WB | Result_W (Got) | Result_W (Exp) | Status" << std::endl;
-    std::cout << "------|----------|----------|----------|-----------|----------------|----------------|-------" << std::endl;
-
-    for (int cycle = 0; cycle < G_NUM_CYCLES_TO_RUN; ++cycle) {
-        tick(top, tfp);
-
-        // Read debug outputs from pipeline.sv
-        uint64_t current_pc_f = top->debug_pc_f;
-        uint32_t current_instr_f = top->debug_instr_f;
-        bool current_reg_write_wb = top->debug_reg_write_wb;
-        uint8_t current_rd_addr_wb = top->debug_rd_addr_wb;
-        uint64_t current_result_w = top->debug_result_w;
-
-        uint64_t expected_result = expected_results_per_cycle[cycle];
-        bool expect_write_this_cycle = (expected_result != X_DEF);
-
-        std::cout << std::setw(5) << std::dec << cycle + 1 << " | " // cycle is 0-indexed
-                  << "0x" << std::setw(8) << std::setfill('0') << std::hex << current_pc_f << " | "
-                  << "0x" << std::setw(8) << std::setfill('0') << std::hex << current_instr_f << " | "
-                  << std::setw(8) << std::dec << (current_reg_write_wb ? "1" : "0") << " | "
-                  << std::setw(9) << std::dec << (current_reg_write_wb ? (int)current_rd_addr_wb : 0 )<< " | " // Display RdAddr if write
-                  << "0x" << std::setw(14) << std::setfill('0') << std::hex << (current_reg_write_wb ? current_result_w : 0) << " | "
-                  << (expect_write_this_cycle ? ("0x" + [&]{std::stringstream ss; ss << std::setw(14) << std::setfill('0') << std::hex << expected_result; return ss.str(); }()) : " X (no write)  ");
-
-        bool cycle_pass = true;
-        if (expect_write_this_cycle) {
-            if (!current_reg_write_wb) {
-                cycle_pass = false;
-                std::cout << " | FAIL (Exp Write, Got No Write)";
-            } else if (current_result_w != expected_result) {
-                cycle_pass = false;
-                std::cout << " | FAIL (Value Mismatch)";
-            } else {
-                std::cout << " | PASS";
-            }
-        } else { // Expect no write (X_DEF)
-            if (current_reg_write_wb) {
-                cycle_pass = false;
-                std::cout << " | FAIL (Exp No Write, Got Write to x" << std::dec << (int)current_rd_addr_wb << "=0x" << std::hex << current_result_w << ")";
-            } else {
-                std::cout << " | PASS (No Write)";
-            }
-        }
-        std::cout << std::endl;
-
-        if (!cycle_pass) {
-            test_passed = false;
-        }
-        std::cout << std::setfill(' '); // Reset fill character
-    }
-
-    if (tfp) {
-        tfp->close();
-    }
-    delete top;
-
-    if (test_passed) {
-        std::cout << "\nPipeline Test Case: " << G_PIPELINE_TEST_CASE_NAME << " - PASSED" << std::endl;
-        return 0;
-    } else {
-        std::cout << "\nPipeline Test Case: " << G_PIPELINE_TEST_CASE_NAME << " - FAILED" << std::endl;
-        return 1;
-    }
-}
-
-
---- File: tests/integration/complex.s ---
-.section .text
-.global _start
-
-_start:
-    addi x12, x0, 1
-    add x1, x0, x12
-    addi x5, x0, 10
-    addi x6, x0, 5
-    sub  x5, x5, x6
-loop:
-    addi x1, x1, 1
-    sd x1, 0x10(x0)
-    ld x1, 0x10(x0)
-    beq x5, x1, endloop
-    jal x10, loop
-endloop:
-    jal x4, poop
-    addi x1, x1, 500
-poop:
-    addi x1, x0, 0
-    slti x1, x5, 10
-    addi x15, x0, 1
-    beq x1, x15, end
-    addi x1, x1, 600
-end:
-    addi x8, x0, 0
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-
-
---- File: tests/integration/mem.s ---
-.section .text
-.global _start
-
-_start:
-    addi x1, x0, 7
-    sd x1, 0x30(x0)
-    ld x2, 0x30(x0)
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-
-
---- File: tests/integration/addi_basic_expected.txt ---
-x
-x
-0000000000000001 // Результат первой ADDI, если она дошла до WB на 4-м такте
-0000000000000005 // Результат второй ADDI
-0000000000000004 // Результат SUB
-0000000000000006 // Результат ADD
-0000000000000001 // Результат SLTI x4 < 10
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-0000000000000000
-
-
---- File: tests/integration/CMakeLists.txt ---
-# Файл: tests/integration/CMakeLists.txt
-cmake_minimum_required(VERSION 3.10)
-
-set(PIPELINE_TEST_BENCH_CPP ${CMAKE_CURRENT_SOURCE_DIR}/pipeline_tb.cpp)
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-set(ELF_TO_MEMH_SCRIPT ${CMAKE_SOURCE_DIR}/scripts/elf_to_memh.py)
-if(NOT EXISTS ${ELF_TO_MEMH_SCRIPT})
-    message(FATAL_ERROR "Script elf_to_memh.py not found at ${ELF_TO_MEMH_SCRIPT}")
-endif()
-
-find_program(RISCV_AS NAMES riscv64-unknown-elf-as DOC "RISC-V Assembler")
-find_program(RISCV_LD NAMES riscv64-unknown-elf-ld DOC "RISC-V Linker")
-find_program(RISCV_OBJCOPY NAMES riscv64-unknown-elf-objcopy DOC "RISC-V Objcopy")
-find_program(RISCV_READELF NAMES riscv64-unknown-elf-readelf DOC "RISC-V Readelf")
-
-if(NOT RISCV_AS OR NOT RISCV_LD OR NOT RISCV_OBJCOPY OR NOT RISCV_READELF)
-    message(FATAL_ERROR "One or more RISC-V toolchain utilities not found.")
-endif()
-
-function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_rel_path num_cycles pc_start_hex_no_prefix)
-    set(VERILOG_MODULE_NAME "pipeline") # Top Verilog module for Verilation
-    set(PIPELINE_RTL_FILES
-        ${CMAKE_SOURCE_DIR}/rtl/pipeline.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/decode.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
-        # ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/hazard_unit.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/data_memory.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
-        ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
-        # Common files are included via -I flag
-    )
-    set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl) # For common includes like common/defines.svh
-    set(TEST_CASE_INPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
-    set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_pipeline_${test_case_name})
-    set(VERILATOR_GENERATED_EXE ${OBJ_DIR}/V${VERILOG_MODULE_NAME})
-
-    set(ASM_INPUT_FILE_FULL_PATH "${TEST_CASE_INPUT_PATH}/${asm_file_rel_path}")
-    set(ASM_OBJECT_FILE_IN_OBJDIR "${OBJ_DIR}/${test_case_name}.o")
-    set(LINKED_ELF_FILE_IN_OBJDIR "${OBJ_DIR}/${test_case_name}.elf")
-    # The VERILOG_HEX_MEM_FILENAME_FOR_PARAM is relative to the OBJ_DIR where Verilator runs
-    set(VERILOG_HEX_MEM_FILENAME_FOR_PARAM "${test_case_name}_instr_mem.hex")
-    set(GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR "${OBJ_DIR}/${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}")
-
-    set(VERILOG_PARAM_PC_START_ADDR "64'h${pc_start_hex_no_prefix}")
-    set(EXPECTED_WD3_FILE_FULL_PATH "${TEST_CASE_INPUT_PATH}/${expected_wd3_file_rel_path}")
-    # Parameter for data memory init file (if needed, pass to Verilator GDATA_MEM_INIT_FILE)
-    # For now, let's assume it's not used by default or handled by empty string in pipeline.sv
-    set(VERILOG_PARAM_DATA_MEM_INIT_FILE "") # Empty means default behavior in data_memory.sv
-
-    set(BUILD_TARGET_NAME ${test_case_name}_build_verilated_pipeline)
-    add_custom_target(${BUILD_TARGET_NAME} ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
-        COMMAND ${RISCV_AS} -march=rv64i -mabi=lp64 -o ${ASM_OBJECT_FILE_IN_OBJDIR} ${ASM_INPUT_FILE_FULL_PATH}
-        COMMAND ${RISCV_LD} --no-relax -Ttext=0x${pc_start_hex_no_prefix} -o ${LINKED_ELF_FILE_IN_OBJDIR} ${ASM_OBJECT_FILE_IN_OBJDIR}
-        COMMAND ${Python3_EXECUTABLE} "${ELF_TO_MEMH_SCRIPT}"
-                "${LINKED_ELF_FILE_IN_OBJDIR}"
-                "${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}" # This is the output path for the hex file
-                --objcopy "${RISCV_OBJCOPY}" --readelf "${RISCV_READELF}" --section ".text" --wordsize 4
-
-        COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
-                -Wall --Wno-fatal --cc --exe --build --trace
-                --top-module ${VERILOG_MODULE_NAME}
-                -I${RTL_INCLUDE_PATH} # To find common/*.svh
-                # Parameters for the 'pipeline' module
-                "-GINSTR_MEM_INIT_FILE=\"${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}\"" # Name relative to OBJ_DIR
-                "-GPC_START_ADDR=${VERILOG_PARAM_PC_START_ADDR}"
-                "-GDATA_MEM_INIT_FILE=\"${VERILOG_PARAM_DATA_MEM_INIT_FILE}\"" # Pass data mem init file
-                ${PIPELINE_RTL_FILES} # All Verilog source files
-                "${PIPELINE_TEST_BENCH_CPP}" # The C++ testbench file
-                --Mdir "${OBJ_DIR}" # Output directory for Verilator artifacts
-                -CFLAGS "-std=c++17 -Wall \
-                    -DPIPELINE_TEST_CASE_NAME_STR_RAW=${test_case_name} \
-                    -DEXPECTED_WD3_FILE_PATH_STR_RAW=${EXPECTED_WD3_FILE_FULL_PATH} \
-                    -DNUM_CYCLES_TO_RUN=${num_cycles}"
-        DEPENDS "${PIPELINE_TEST_BENCH_CPP}" "${ASM_INPUT_FILE_FULL_PATH}"
-                "${EXPECTED_WD3_FILE_FULL_PATH}" "${ELF_TO_MEMH_SCRIPT}"
-                ${PIPELINE_RTL_FILES}
-        COMMENT "Building pipeline for test case: ${test_case_name}"
-        VERBATIM
-    )
-
-    set(RUN_TARGET_NAME run_${test_case_name}_pipeline_test)
-    add_custom_target(${RUN_TARGET_NAME}
-        COMMAND "${VERILATOR_GENERATED_EXE}"
-        DEPENDS ${BUILD_TARGET_NAME}
-        WORKING_DIRECTORY ${OBJ_DIR} # Important: Verilator expects to find the .hex file here
-        COMMENT "Running pipeline test case: ${test_case_name}"
-        VERBATIM
-    )
-
-    # Logic to add this test to a global 'run_all_pipeline_tests' target (if it exists)
-    if(NOT TARGET run_all_pipeline_tests)
-        add_custom_target(run_all_pipeline_tests COMMENT "Running all pipeline integration tests")
-    endif()
-    add_dependencies(run_all_pipeline_tests ${RUN_TARGET_NAME})
-
-    # Ensure tests_full depends on run_all_pipeline_tests
-    if(TARGET tests_full)
-         add_dependencies(tests_full run_all_pipeline_tests)
-    endif()
-
-
-    message(STATUS "Configured pipeline test case: ${test_case_name}")
-    message(STATUS "  ASM file: ${ASM_INPUT_FILE_FULL_PATH}")
-    message(STATUS "  Expected output file: ${EXPECTED_WD3_FILE_FULL_PATH}")
-    message(STATUS "  Generated instruction hex file will be at: ${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}")
-endfunction()
-
-# Existing test calls
-add_pipeline_test(addi_basic_asm "addi_basic_instr.s" "addi_basic_expected.txt" 12 "10000")
-add_pipeline_test(jump_basic_asm "jump.s" "jump_expected.txt" 17 "10000")
-add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "10000")
-add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "10000") # Needs DATA_MEM_INIT_FILE
-add_pipeline_test(complex_asm "complex.s" "complex_expected.txt" 55 "10000")
 
 

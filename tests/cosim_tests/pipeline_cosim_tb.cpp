@@ -1,4 +1,3 @@
-// Файл: tests/cosim_tests/pipeline_cosim_tb.cpp
 #include "Vpipeline.h"
 #include "verilated_vcd_c.h"
 #include "verilated.h"
@@ -9,9 +8,8 @@
 #include <string>
 #include <vector>
 #include <sstream>
-#include <cstdlib> // Для std::getenv
+#include <cstdlib>
 
-// Макросы, определяемые CMake
 #ifndef PIPELINE_COSIM_TEST_CASE_NAME_STR_RAW
 #error "PIPELINE_COSIM_TEST_CASE_NAME_STR_RAW not defined!"
 #endif
@@ -20,16 +18,13 @@
 #error "NUM_CYCLES_TO_RUN not defined!"
 #endif
 
-#ifndef VERILOG_OUTPUT_FILE_PATH_STR_RAW // Имя файла, куда будет писать Verilog тестбенч
+#ifndef VERILOG_OUTPUT_FILE_PATH_STR_RAW
 #error "VERILOG_OUTPUT_FILE_PATH_STR_RAW not defined!"
 #endif
 
-
-// Вспомогательные макросы для превращения в строку
 #define STRINGIFY_HELPER(x) #x
 #define STRINGIFY(x) STRINGIFY_HELPER(x)
 
-// Глобальные переменные из макросов
 const std::string G_PIPELINE_COSIM_TEST_CASE_NAME = STRINGIFY(PIPELINE_COSIM_TEST_CASE_NAME_STR_RAW);
 const int G_NUM_CYCLES_TO_RUN = NUM_CYCLES_TO_RUN;
 const std::string G_VERILOG_OUTPUT_FILE_PATH = STRINGIFY(VERILOG_OUTPUT_FILE_PATH_STR_RAW);
@@ -41,18 +36,18 @@ double sc_time_stamp() {
 }
 
 void tick(Vpipeline* top, VerilatedVcdC* tfp, std::ofstream& outFile) {
-    top->clk = 0; // Changed from clk_i
+    top->clk = 0;
     top->eval();
     if (tfp) tfp->dump(sim_time);
     sim_time++;
 
-    top->clk = 1; // Changed from clk_i
+    top->clk = 1;
     top->eval();
     if (tfp) tfp->dump(sim_time);
-    // After posedge clk, when all signals WB stage are stable
-    if (top->debug_reg_write_wb) { // Changed from we3_d_o, using existing debug signal
+
+    if (top->debug_reg_write_wb) {
         if (outFile.is_open()) {
-            // Changed from wd3_d_o, using existing debug signal
+
             outFile << std::hex << std::setw(16) << std::setfill('0') << top->debug_result_w << std::endl;
         }
     }
@@ -81,14 +76,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    top->rst_n = 0; // Assert reset (active low), changed from rst_i = 1
+    top->rst_n = 0;
     for(int i=0; i<2; ++i) {
-        // During reset, do not write to output file
         top->clk = 0; top->eval(); if (tfp) tfp->dump(sim_time); sim_time++;
         top->clk = 1; top->eval(); if (tfp) tfp->dump(sim_time); sim_time++;
     }
-    top->rst_n = 1; // De-assert reset, changed from rst_i = 0
-    // One more tick for reset to propagate if needed, or start main loop
+    top->rst_n = 1;
     top->clk = 0; top->eval(); if (tfp) tfp->dump(sim_time); sim_time++;
     top->clk = 1; top->eval(); if (tfp) tfp->dump(sim_time); sim_time++;
 
@@ -107,5 +100,5 @@ int main(int argc, char** argv) {
         tfp->close();
     }
     delete top;
-    return 0; // Success for Verilog part
+    return 0;
 }
