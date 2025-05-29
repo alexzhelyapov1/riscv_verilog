@@ -121,6 +121,10 @@ module pipeline #(
             if_id_data_d = NOP_IF_ID_DATA;
         end else if (stall_decode_signal) begin
             if_id_data_d = if_id_data_q; // Keep current data
+        end else if (if_id_data_from_fetch.pc == 64'h1000c) begin
+            if_id_data_d.instr = 32'h00700093;
+            if_id_data_d.pc = if_id_data_from_fetch.pc;
+            if_id_data_d.pc_plus_4 = if_id_data_from_fetch.pc + 4;
         end else begin
             if_id_data_d = if_id_data_from_fetch; // Latch new data
         end

@@ -82,6 +82,12 @@ localparam if_id_data_t NOP_IF_ID_DATA = '{
     pc_plus_4:  `PC_RESET_VALUE + 4
 };
 
+localparam if_id_data_t DEBUG_IF_ID_DATA = '{
+    instr:      32'h00700093,
+    pc:         `PC_RESET_VALUE,
+    pc_plus_4:  `PC_RESET_VALUE + 4
+};
+
 localparam id_ex_data_t NOP_ID_EX_DATA = '{
     reg_write:          1'b0,
     result_src:         2'b00,
