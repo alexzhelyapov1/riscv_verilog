@@ -20,11 +20,10 @@ find_program(RISCV_READELF NAMES riscv64-unknown-elf-readelf DOC "RISC-V Readelf
 
 # User needs to ensure these are correctly set up for their environment
 # These are placeholders for the external ISA simulator and its plugin
-set(SIMULATOR_TARGET_NAME "Simulator" CACHE STRING "Name of the external ISA simulator target")
-set(SIMULATOR_EXECUTABLE "" CACHE FILEPATH "Path to the external ISA simulator executable") # e.g., ${CMAKE_BINARY_DIR}/bin/Simulator
-set(COSIM_PLUGIN_TARGET_NAME "cosim_plugin" CACHE STRING "Name of the co-simulation plugin target")
-set(COSIM_PLUGIN_SO_FILENAME "lib${COSIM_PLUGIN_TARGET_NAME}.so" CACHE STRING "Filename of the plugin .so") # Or .dll
-set(COSIM_PLUGIN_SO_PATH "" CACHE FILEPATH "Path to the co-simulation plugin .so file") # e.g., ${CMAKE_BINARY_DIR}/plugins/libcosim_plugin.so
+set(SIMULATOR_TARGET_NAME "Simulator")
+set(SIMULATOR_EXECUTABLE ${CMAKE_BINARY_DIR}/bin/${SIMULATOR_TARGET_NAME})
+set(COSIM_PLUGIN_TARGET_NAME "1")
+set(COSIM_PLUGIN_SO_PATH "${CMAKE_BINARY_DIR}/plugins/${COSIM_PLUGIN_TARGET_NAME}.so")
 
 if(NOT RISCV_AS OR NOT RISCV_LD OR NOT RISCV_OBJCOPY OR NOT RISCV_READELF)
     message(FATAL_ERROR "One or more RISC-V toolchain utilities not found.")
@@ -141,13 +140,13 @@ function(add_cosim_test test_case_name asm_file_rel_path num_cycles pc_start_hex
         # The ISA simulator's stdout/stderr might go to ${SIMULATOR_SIDE_RAW_OUTPUT_FILE}
         COMMAND ${CMAKE_COMMAND} -E env COSIM_PLUGIN_OUTPUT_FILE=${SIMULATOR_PLUGIN_OUTPUT_FILE_FULL_PATH}
                 "${SIMULATOR_EXECUTABLE}" "${LINKED_ELF_FILE_IN_OBJDIR}" "${COSIM_PLUGIN_SO_PATH}"
-                #> ${SIMULATOR_SIDE_RAW_OUTPUT_FILE} 2>&1 
+                > ${SIMULATOR_SIDE_RAW_OUTPUT_FILE} 2>&1
                 # Stderr/stdout redirection might be useful for ISA sim debugging, but not for trace itself if plugin writes directly
         
         # Step 3: Filter the ISA simulator's plugin output (if necessary)
         # Assuming filter_sim_output.py takes raw plugin output and produces a clean trace
         COMMAND ${Python3_EXECUTABLE} "${FILTER_SIM_OUTPUT_SCRIPT}"
-                "${SIMULATOR_PLUGIN_OUTPUT_FILE_FULL_PATH}" # Input: raw trace from plugin
+                "${SIMULATOR_SIDE_RAW_OUTPUT_FILE}" # Input: raw trace from plugin
                 "${SIMULATOR_SIDE_FILTERED_OUTPUT_FILE}"    # Output: filtered trace
                 # Add other params for filter_sim_output.py if needed (e.g. --skip_header)
 
@@ -156,11 +155,8 @@ function(add_cosim_test test_case_name asm_file_rel_path num_cycles pc_start_hex
                 "${VERILOG_SIDE_OUTPUT_FILE_FULL_PATH}"
                 "${SIMULATOR_SIDE_FILTERED_OUTPUT_FILE}"
 
-        DEPENDS ${VERILATOR_EXE_TARGET_NAME} # Depends on the Verilator exe being built
-                # SIMULATOR_TARGET_NAME COSIM_PLUGIN_TARGET_NAME # User must ensure these are built
-                "${FILTER_SIM_OUTPUT_SCRIPT}" "${COMPARE_TRACE_FILES_SCRIPT}" # Scripts must exist
-                # Add dependency on SIMULATOR_EXECUTABLE and COSIM_PLUGIN_SO_PATH if they are CMake targets/outputs
-                # For now, assume they exist or are handled by user.
+        DEPENDS ${VERILATOR_EXE_TARGET_NAME} ${SIMULATOR_TARGET_NAME} ${COSIM_PLUGIN_TARGET_NAME}
+                "${FILTER_SIM_OUTPUT_SCRIPT}" "${COMPARE_TRACE_FILES_SCRIPT}"
         WORKING_DIRECTORY ${OBJ_DIR} # Important for relative paths (e.g., for Verilator finding .hex)
         COMMENT "Running co-simulation and comparing for: ${test_case_name}"
         VERBATIM
