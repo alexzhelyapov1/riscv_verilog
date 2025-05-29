@@ -7,7 +7,7 @@ module instruction_memory (
 );
 
     parameter string INSTR_MEM_INIT_FILE_PARAM = ""; // Parameter for memory initialization file
-    localparam ROM_SIZE = 256; // Number of instructions
+    localparam ROM_SIZE = 32'h100000; // Number of instructions
     logic [`INSTR_WIDTH-1:0] mem[ROM_SIZE-1:0];
 
     initial begin

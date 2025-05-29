@@ -96,7 +96,7 @@ typedef struct packed {
 // Used for reset and flushing stages
 
 localparam if_id_data_t NOP_IF_ID_DATA = '{
-    instr:      `NOP_INSTRUCTION,
+    instr:      32'b0,
     pc:         `PC_RESET_VALUE, // Or other defined "safe" PC
     pc_plus_4:  `PC_RESET_VALUE + 4 // Or other defined "safe" PC+4
 };
