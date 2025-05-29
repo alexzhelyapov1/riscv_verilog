@@ -1,14 +1,11 @@
-// rtl/core/fetch.sv
 `include "common/pipeline_types.svh"
 
 module fetch #(
-    parameter string INSTR_MEM_INIT_FILE_PARAM = "", // Parameter for instruction memory init file
-    parameter logic [`DATA_WIDTH-1:0] PC_INIT_VALUE_PARAM = `PC_RESET_VALUE // Parameter for initial PC value
+    parameter string INSTR_MEM_INIT_FILE_PARAM = "",
+    parameter logic [`DATA_WIDTH-1:0] PC_INIT_VALUE_PARAM = `PC_RESET_VALUE
 )(
     input  logic clk,
     input  logic rst_n,
-
-    // Control signals
     input  logic                       stall_f_i,
     input  logic                       pc_src_e_i,
     input  logic [`DATA_WIDTH-1:0]     pc_target_e_i,
@@ -33,7 +30,7 @@ module fetch #(
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pc_reg <= PC_INIT_VALUE_PARAM; // Use parameterized reset value
+            pc_reg <= PC_INIT_VALUE_PARAM;
         end else if (!stall_f_i) begin
             pc_reg <= pc_next;
         end

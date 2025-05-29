@@ -1,8 +1,7 @@
-// rtl/core/memory_stage.sv
 `include "common/pipeline_types.svh"
 
 module memory_stage #(
-    parameter string DATA_MEM_INIT_FILE_PARAM = "" // Parameter for data memory init file
+    parameter string DATA_MEM_INIT_FILE_PARAM = ""
 )(
     input  logic clk,
     input  logic rst_n,

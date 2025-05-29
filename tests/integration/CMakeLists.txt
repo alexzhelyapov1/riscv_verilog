@@ -1,4 +1,3 @@
-# Файл: tests/integration/CMakeLists.txt
 cmake_minimum_required(VERSION 3.10)
 
 set(PIPELINE_TEST_BENCH_CPP ${CMAKE_CURRENT_SOURCE_DIR}/pipeline_tb.cpp)
@@ -18,7 +17,7 @@ if(NOT RISCV_AS OR NOT RISCV_LD OR NOT RISCV_OBJCOPY OR NOT RISCV_READELF)
 endif()
 
 function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_rel_path num_cycles pc_start_hex_no_prefix)
-    set(VERILOG_MODULE_NAME "pipeline") # Top Verilog module for Verilation
+    set(VERILOG_MODULE_NAME "pipeline")
     set(PIPELINE_RTL_FILES
         ${CMAKE_SOURCE_DIR}/rtl/pipeline.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/fetch.sv
@@ -26,7 +25,6 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
         ${CMAKE_SOURCE_DIR}/rtl/core/execute.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/memory_stage.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/writeback_stage.sv
-        # ${CMAKE_SOURCE_DIR}/rtl/core/pipeline_control.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/hazard_unit.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/alu.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/control_unit.sv
@@ -34,26 +32,20 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
         ${CMAKE_SOURCE_DIR}/rtl/core/immediate_generator.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/instruction_memory.sv
         ${CMAKE_SOURCE_DIR}/rtl/core/register_file.sv
-        # Common files are included via -I flag
+
     )
-    set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl) # For common includes like common/defines.svh
+    set(RTL_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/rtl)
     set(TEST_CASE_INPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
     set(OBJ_DIR ${CMAKE_CURRENT_BINARY_DIR}/obj_dir_pipeline_${test_case_name})
     set(VERILATOR_GENERATED_EXE ${OBJ_DIR}/V${VERILOG_MODULE_NAME})
-
     set(ASM_INPUT_FILE_FULL_PATH "${TEST_CASE_INPUT_PATH}/${asm_file_rel_path}")
     set(ASM_OBJECT_FILE_IN_OBJDIR "${OBJ_DIR}/${test_case_name}.o")
     set(LINKED_ELF_FILE_IN_OBJDIR "${OBJ_DIR}/${test_case_name}.elf")
-    # The VERILOG_HEX_MEM_FILENAME_FOR_PARAM is relative to the OBJ_DIR where Verilator runs
     set(VERILOG_HEX_MEM_FILENAME_FOR_PARAM "${test_case_name}_instr_mem.hex")
     set(GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR "${OBJ_DIR}/${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}")
-
     set(VERILOG_PARAM_PC_START_ADDR "64'h${pc_start_hex_no_prefix}")
     set(EXPECTED_WD3_FILE_FULL_PATH "${TEST_CASE_INPUT_PATH}/${expected_wd3_file_rel_path}")
-    # Parameter for data memory init file (if needed, pass to Verilator GDATA_MEM_INIT_FILE)
-    # For now, let's assume it's not used by default or handled by empty string in pipeline.sv
-    set(VERILOG_PARAM_DATA_MEM_INIT_FILE "") # Empty means default behavior in data_memory.sv
-
+    set(VERILOG_PARAM_DATA_MEM_INIT_FILE "")
     set(BUILD_TARGET_NAME ${test_case_name}_build_verilated_pipeline)
     add_custom_target(${BUILD_TARGET_NAME} ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJ_DIR}
@@ -61,20 +53,18 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
         COMMAND ${RISCV_LD} --no-relax -Ttext=0x${pc_start_hex_no_prefix} -o ${LINKED_ELF_FILE_IN_OBJDIR} ${ASM_OBJECT_FILE_IN_OBJDIR}
         COMMAND ${Python3_EXECUTABLE} "${ELF_TO_MEMH_SCRIPT}"
                 "${LINKED_ELF_FILE_IN_OBJDIR}"
-                "${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}" # This is the output path for the hex file
+                "${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}"
                 --objcopy "${RISCV_OBJCOPY}" --readelf "${RISCV_READELF}" --section ".text" --wordsize 4
-
         COMMAND ${PROJECT_VERILATOR_EXECUTABLE}
                 -Wall --Wno-fatal --cc --exe --build --trace
                 --top-module ${VERILOG_MODULE_NAME}
-                -I${RTL_INCLUDE_PATH} # To find common/*.svh
-                # Parameters for the 'pipeline' module
-                "-GINSTR_MEM_INIT_FILE=\"${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}\"" # Name relative to OBJ_DIR
+                -I${RTL_INCLUDE_PATH}
+                "-GINSTR_MEM_INIT_FILE=\"${VERILOG_HEX_MEM_FILENAME_FOR_PARAM}\""
                 "-GPC_START_ADDR=${VERILOG_PARAM_PC_START_ADDR}"
-                "-GDATA_MEM_INIT_FILE=\"${VERILOG_PARAM_DATA_MEM_INIT_FILE}\"" # Pass data mem init file
-                ${PIPELINE_RTL_FILES} # All Verilog source files
-                "${PIPELINE_TEST_BENCH_CPP}" # The C++ testbench file
-                --Mdir "${OBJ_DIR}" # Output directory for Verilator artifacts
+                "-GDATA_MEM_INIT_FILE=\"${VERILOG_PARAM_DATA_MEM_INIT_FILE}\""
+                ${PIPELINE_RTL_FILES}
+                "${PIPELINE_TEST_BENCH_CPP}"
+                --Mdir "${OBJ_DIR}"
                 -CFLAGS "-std=c++17 -Wall \
                     -DPIPELINE_TEST_CASE_NAME_STR_RAW=${test_case_name} \
                     -DEXPECTED_WD3_FILE_PATH_STR_RAW=${EXPECTED_WD3_FILE_FULL_PATH} \
@@ -90,22 +80,19 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
     add_custom_target(${RUN_TARGET_NAME}
         COMMAND "${VERILATOR_GENERATED_EXE}"
         DEPENDS ${BUILD_TARGET_NAME}
-        WORKING_DIRECTORY ${OBJ_DIR} # Important: Verilator expects to find the .hex file here
+        WORKING_DIRECTORY ${OBJ_DIR}
         COMMENT "Running pipeline test case: ${test_case_name}"
         VERBATIM
     )
 
-    # Logic to add this test to a global 'run_all_pipeline_tests' target (if it exists)
     if(NOT TARGET run_all_pipeline_tests)
         add_custom_target(run_all_pipeline_tests COMMENT "Running all pipeline integration tests")
     endif()
     add_dependencies(run_all_pipeline_tests ${RUN_TARGET_NAME})
 
-    # Ensure tests_full depends on run_all_pipeline_tests
     if(TARGET tests_full)
          add_dependencies(tests_full run_all_pipeline_tests)
     endif()
-
 
     message(STATUS "Configured pipeline test case: ${test_case_name}")
     message(STATUS "  ASM file: ${ASM_INPUT_FILE_FULL_PATH}")
@@ -113,9 +100,9 @@ function(add_pipeline_test test_case_name asm_file_rel_path expected_wd3_file_re
     message(STATUS "  Generated instruction hex file will be at: ${GENERATED_HEX_MEM_FILE_FULL_PATH_IN_OBJDIR}")
 endfunction()
 
-# Existing test calls
+
 add_pipeline_test(addi_basic_asm "addi_basic_instr.s" "addi_basic_expected.txt" 12 "10000")
 add_pipeline_test(jump_basic_asm "jump.s" "jump_expected.txt" 17 "10000")
 add_pipeline_test(beq_basic_asm "beq.s" "beq_expected.txt" 22 "10000")
-add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "10000") # Needs DATA_MEM_INIT_FILE
+add_pipeline_test(mem_basic_asm "mem.s" "mem_expected.txt" 12 "10000")
 add_pipeline_test(complex_asm "complex.s" "complex_expected.txt" 55 "10000")
