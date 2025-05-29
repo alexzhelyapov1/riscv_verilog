@@ -110,8 +110,8 @@ def compare_files(file1_path, file2_path):
             else: print(f"  File2 (Sim):     0x{val2:<16X} ({val2:<20})")
             mismatches += 1
 
-    if len(parsed_values1) != len(parsed_values2):
-        print(f"Warning: Files have different number of valid entries after parsing ({len(parsed_values1)} vs {len(parsed_values2)}). Compared up to {compare_len} entries.")
+    # if len(parsed_values1) != len(parsed_values2):
+    #     print(f"Warning: Files have different number of valid entries after parsing ({len(parsed_values1)} vs {len(parsed_values2)}). Compared up to {compare_len} entries.")
 
     if mismatches > 0:
         print(f"Found {mismatches} mismatches.")

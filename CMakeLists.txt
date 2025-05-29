@@ -33,3 +33,4 @@ find_program(RISCV_OBJCOPY NAMES riscv64-unknown-elf-objcopy DOC "RISC-V Objcopy
 find_program(RISCV_READELF NAMES riscv64-unknown-elf-readelf DOC "RISC-V Readelf")
 
 add_subdirectory(tests)
+add_subdirectory(simulator)

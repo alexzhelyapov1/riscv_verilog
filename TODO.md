@@ -3,3 +3,4 @@
 gtkwave
 gcc-riscv64-unknown-elf
 nikozer_cosim_plugin
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DPLUGIN_ENABLED=true ..
