@@ -1,3 +1,6 @@
 add_custom_target(tests_full)
 add_subdirectory(unit)
 add_subdirectory(integration)
+
+add_custom_target(run_all_cosim_tests)
+add_subdirectory(cosim_tests)
