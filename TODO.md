@@ -2,3 +2,4 @@
 - [ ] Write to RegFile in the end of tact
 gtkwave
 gcc-riscv64-unknown-elf
+nikozer_cosim_plugin
