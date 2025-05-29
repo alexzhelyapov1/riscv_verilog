@@ -20,7 +20,7 @@ module data_memory #(
     // Addresses are byte addresses.
     localparam MEM_ADDR_BITS = 10; // For 1KB of byte-addressable memory (2^10 bytes)
     localparam MEM_SIZE_BYTES = 1 << MEM_ADDR_BITS;
-    localparam MEM_SIZE_WORDS = MEM_SIZE_BYTES / (`DATA_WIDTH/8);
+    localparam MEM_ADDR_WIDTH = $clog2(MEM_SIZE_BYTES);
 
     // Byte-addressable memory array. Each element is a byte.
     logic [7:0] mem [MEM_SIZE_BYTES-1:0];
@@ -38,8 +38,8 @@ module data_memory #(
 
             // Construct the 64-bit aligned word from individual bytes
             for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
-                if (((addr_i & ~((`DATA_WIDTH/8) - 1)) + i) < MEM_SIZE_BYTES) begin
-                    current_aligned_word[(i*8) +: 8] = mem[(addr_i & ~((`DATA_WIDTH/8) - 1)) + i];
+                if (((addr_i & ~((`DATA_WIDTH/8) - 1)) + `DATA_WIDTH'(i)) < MEM_SIZE_BYTES) begin
+                    current_aligned_word[(i*8) +: 8] = mem[(addr_i & ~((`DATA_WIDTH/8) - 1)) + `DATA_WIDTH'(i)];
                 end else begin
                     current_aligned_word[(i*8) +: 8] = 8'h00; // Out of bounds byte read as 0
                 end
@@ -58,18 +58,7 @@ module data_memory #(
                     temp_read_data_comb = {{(`DATA_WIDTH-32){aligned_word_read_comb[byte_offset_in_word*8 + 31]}}, aligned_word_read_comb[byte_offset_in_word*8 +: 32]};
                 end
                 `FUNCT3_LD: begin // Load Double-word (64-bit)
-                    // For LD, the byte_offset_in_word should ideally be 0 if access is aligned.
-                    // If not, this will take the 64-bit value starting from the byte_offset_in_word within the aligned fetched block.
-                    // This is a common interpretation for unaligned LD, though performance might vary.
-                    // Assuming addr_i is used directly and memory system handles alignment or unalignment.
-                    // The current_aligned_word is based on addr_i & ~7. byte_offset_in_word determines where in *that* aligned block we start.
-                    // This logic means we effectively read starting at (addr_i & ~7) + byte_offset_in_word, which is addr_i.
-                    // The size is always 64 bits.
-                    temp_read_data_comb = aligned_word_read_comb; // This reads the 8-byte block starting at addr_i & ~7.
-                                                                // If addr_i is unaligned (e.g. 0x1003 for LD), this will be an unaligned read.
-                                                                // For RISC-V, LD must be naturally aligned (address multiple of 8).
-                                                                // If we assume addr_i *is* aligned for LD, then byte_offset_in_word is 0.
-                                                                // The current logic for aligned_word_read_comb is fine.
+                    temp_read_data_comb = aligned_word_read_comb;
                 end
                 `FUNCT3_LBU: begin // Load Byte (unsigned)
                     temp_read_data_comb = {{(`DATA_WIDTH-8){1'b0}}, aligned_word_read_comb[byte_offset_in_word*8 +: 8]};
@@ -98,21 +87,21 @@ module data_memory #(
                 end
                 `FUNCT3_SH: begin // Store Half-word
                     if (addr_i < MEM_SIZE_BYTES - 1) begin // Check bounds for 2 bytes
-                        mem[addr_i]   = write_data_i[7:0];
-                        mem[addr_i+1] = write_data_i[15:8];
+                        mem[addr_i]   <= write_data_i[7:0];
+                        mem[addr_i+1] <= write_data_i[15:8];
                     end
                 end
                 `FUNCT3_SW: begin // Store Word (32-bit)
                     if (addr_i < MEM_SIZE_BYTES - 3) begin // Check bounds for 4 bytes
                         for (int i = 0; i < 4; i++) begin
-                            mem[addr_i+i] = write_data_i[i*8 +: 8];
+                            mem[addr_i+i] <= write_data_i[i*8 +: 8];
                         end
                     end
                 end
                 `FUNCT3_SD: begin // Store Double-word (64-bit)
                      if (addr_i < MEM_SIZE_BYTES - 7) begin // Check bounds for 8 bytes
                         for (int i = 0; i < (`DATA_WIDTH/8); i++) begin
-                            mem[addr_i+i] = write_data_i[i*8 +: 8];
+                            mem[addr_i + `DATA_WIDTH'(i)] <= write_data_i[i*8 +: 8];
                         end
                     end
                 end
@@ -127,13 +116,6 @@ module data_memory #(
             for (int i = 0; i < MEM_SIZE_BYTES; i++) begin
                 mem[i] = 8'h00;
             end
-            // Optional: Load from init file on reset
-            // This is usually done with an initial block for synthesis/Verilator,
-            // but for simulation reset, it can be here.
-            // For Verilator, $readmemh in initial is typical.
-            // If DATA_MEM_INIT_FILE is not empty, it should be loaded by an initial block
-            // or a Verilator-specific mechanism if not directly supported in always_ff reset.
-            // For now, keep reset simple (to zeros). File init is handled via Verilator params typically.
         end
     end
     // Added initial block for Verilator to load memory init file
