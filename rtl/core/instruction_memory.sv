@@ -19,6 +19,7 @@ module instruction_memory (
 
         if (INSTR_MEM_INIT_FILE_PARAM != "") begin
             $readmemh(INSTR_MEM_INIT_FILE_PARAM, mem);
+            // mem[ROM_SIZE'h4100] = 32'h00700093;
         end else begin
             mem[0] = 32'h00100093; // addi x1, x0, 1
             mem[1] = 32'h00200113; // addi x2, x0, 2
